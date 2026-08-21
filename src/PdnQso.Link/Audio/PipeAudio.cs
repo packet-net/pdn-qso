@@ -206,6 +206,13 @@ public sealed class PipeAudioInput : IAudioInput, IDisposable
 }
 
 /// <summary>The transmit half of a pipe pair: raw float samples into the FIFO.</summary>
+/// <remarks>
+/// The FIFO is opened read-write for the same reason the capture side is, which means the
+/// kernel always sees a reader and a write never fails for want of one. It can still block:
+/// once the pipe's buffer is full and nothing at the far end is draining it, the write waits.
+/// That is what happens when one station of a pair is started and the other never is, and it
+/// is the daemon's behaviour too - a pipe pair with nobody on the other end is not a link.
+/// </remarks>
 public sealed class PipeAudioOutput : IAudioOutput, IDisposable
 {
     private readonly FileStream _fifo;

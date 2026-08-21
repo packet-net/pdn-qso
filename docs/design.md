@@ -49,6 +49,49 @@ One `IPowerControl` in the station, implemented per device: **Flex** sets `rfpow
 
 Terminal.Gui 2.4.x. Layout: a status bar (device, mode, centre, power, PTT and DCD lamps, last SNR, correspondent); the **Monitor pane, always on screen** (every frame heard, scrolling, with callsigns, modem, SNR, offset and quality - full height when no activity is selected, a lower pane otherwise); a main pane for the active activity (Chat, File, Perf); F-keys for switching activity and for the settings dialog. Settings (all in the dialog, persisted to `~/.config/pdn-qso/config.json`): device string, callsign, modem mode, audio centre, TX delay ms, audio in/out gain, power (watts on Flex with the read-back beside it; mixer percentage on a sound card), ident interval and callsign, ARQ timeouts and retries, fountain c/delta, frame-log path. First run, with no config: a wizard that lists ALSA cards, discovers Flex radios, or takes an UberSDR host, then the callsign, then the mode.
 
+### 6a. What phase A2 added to this list
+
+Built and found missing while building it. Recorded here because this document is binding and a
+settings list that does not start a station is not much of a specification.
+
+- **RF frequency.** The list above has an audio centre and no dial. A Flex is told where to tune
+  and an UberSDR cannot guess, so there is one more setting: the RF frequency the modem's audio
+  centre is to land on. The dial follows from it and the sideband
+  (`PdnQso.Link.Devices.DialFrequency`), and a sound card ignores it because the rig's own VFO
+  decides. It is also what the frame log's `rf_hz` column gets.
+- **Which PTT line, and where.** "A sound card with a CM108 PTT widget" is four settings once it
+  is real: none / cm108 / serial, the device node, the CM108 GPIO pin, and RTS or DTR. The
+  library keys all of them; nothing here can guess which one is wired.
+- **Capture rate.** The modes run at 12 or 48 kHz and plenty of cards will not open 12 kHz at all,
+  so the card runs at its own rate and the adapter resamples by a whole number, exactly as
+  pdn-soundmodem's daemon does. 48000 works for every mode this tool has, and is the default.
+- **Sideband, DAX channel, antenna, UberSDR mode and password**, for the same reason: a device
+  string names a radio and not how to talk to it.
+
+### 6b. The activity seam
+
+The main window owns the layout, the Monitor pane, the status bar and the station. An activity
+owns one view and the conversation it is having over the station it was handed:
+
+```csharp
+public interface IActivityView
+{
+    string Title { get; }                 // the tab name: Chat, File, Perf
+    Terminal.Gui.ViewBase.View View { get; }
+    void Attach(IStation station);        // called again on every station restart
+}
+```
+
+Two things it obliges an activity to get right. `Attach` is called more than once - changing the
+device, the mode or the audio centre restarts the station - so an activity has to drop whatever
+it held from the previous one rather than keep talking to a station that has gone. And a
+station's frame events arrive on the capture thread, so anything touching a view goes through
+`IApplication.Invoke` first.
+
+The Monitor pane shows every frame **heard**. A station's own transmissions are in the frame log
+(the station records them) but not in the pane, because `IStation` raises no transmitted-frame
+event; the line formatter already takes an `outgoing` flag for when it does.
+
 ## 7. Phases and agents
 
 A (skeleton + Monitor + devices + settings) first; then B (chat ARQ), C (fountain + file), D (perf) in parallel; E (packaging, README, hand-off). Each phase is a PR with its own tests; the skeleton phase also brings `ci.yml` and `release.yml` (copied in shape from pdn-soundmodem, self-hosted runner labels, release notes from PR titles via `scripts/release-notes.py`).

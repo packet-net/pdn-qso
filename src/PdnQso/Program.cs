@@ -1,13 +1,16 @@
 // pdn-qso - a terminal tool for interactive two-way testing over the pdn-soundmodem modems.
 //
-// Phase A ships the skeleton: this brings up a Terminal.Gui window and quits on Ctrl+Q. The
-// real screen - the always-on Monitor pane, the status bar, and the Chat / File / Perf panes
-// below it - is phase A2's, and the protocol underneath it lives in PdnQso.Link, where it is
-// tested without a terminal at all.
+// This file is the wiring and nothing else: read the command line, find or build a config,
+// bring a station up over it, and put the screen on top. The protocol is in PdnQso.Link where
+// it is tested without a terminal; the layout is in PdnQso.Ui; the parts of this program worth
+// testing (the config, the command line, the two line formatters) are pure and are.
 using System.Reflection;
+using System.Runtime.InteropServices;
+using PdnQso;
+using PdnQso.Config;
+using PdnQso.Ui;
 using Terminal.Gui.App;
 using Terminal.Gui.Input;
-using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
 string version =
@@ -23,25 +26,37 @@ if (plus >= 0)
     version = version[..plus];
 }
 
-foreach (string arg in args)
+CommandLine command = CommandLine.Parse(args);
+
+if (command.Error is string error)
 {
-    switch (arg)
-    {
-        case "--version" or "-V":
-            Console.WriteLine($"pdn-qso {version}");
-            return 0;
-        case "--help" or "-h":
-            Console.WriteLine($"pdn-qso {version} - interactive two-way testing over pdn-soundmodem");
-            Console.WriteLine();
-            Console.WriteLine("  pdn-qso            start the terminal UI (Ctrl+Q quits)");
-            Console.WriteLine("  pdn-qso --version  print the version and exit");
-            Console.WriteLine();
-            Console.WriteLine("Settings will live in ~/.config/pdn-qso/config.json.");
-            return 0;
-        default:
-            Console.Error.WriteLine($"pdn-qso: unknown argument '{arg}' - try --help");
-            return 2;
-    }
+    Console.Error.WriteLine($"pdn-qso: {error}");
+    return 2;
+}
+
+if (command.ShowVersion)
+{
+    Console.WriteLine($"pdn-qso {version}");
+    return 0;
+}
+
+if (command.ShowHelp)
+{
+    Console.WriteLine(CommandLine.HelpText(version));
+    return 0;
+}
+
+string configPath = command.ResolvedConfigPath;
+QsoConfig? onDisk;
+try
+{
+    onDisk = QsoConfig.Load(configPath);
+}
+catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException)
+{
+    // Refusing to start beats writing a fresh default over somebody's hand-edited file.
+    Console.Error.WriteLine($"pdn-qso: {e.Message}");
+    return 2;
 }
 
 // Ctrl+Q, not Terminal.Gui's default of Esc: Esc is the key an operator hits to back out of a
@@ -62,17 +77,91 @@ catch (Exception e) when (e is not OutOfMemoryException)
     return 1;
 }
 
-using var window = new Window
+QsoConfig config;
+if (onDisk is null)
 {
-    Title = $"pdn-qso {version} (Ctrl+Q to quit)",
-};
+    QsoConfig? wizard = FirstRunWizard.Run(app, new QsoConfig());
+    if (wizard is null)
+    {
+        app.Dispose();
+        Console.Error.WriteLine("pdn-qso: nothing was set up, so nothing was written.");
+        return 1;
+    }
 
-window.Add(new Label
+    config = wizard;
+    try
+    {
+        config.Save(configPath);
+    }
+    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+    {
+        MessageBox.ErrorQuery(
+            app, "Settings", $"Could not write {configPath}: {e.Message}", "OK");
+    }
+}
+else
 {
-    X = Pos.Center(),
-    Y = Pos.Center(),
-    Text = "pdn-qso",
-});
+    config = onDisk;
+}
+
+// For this session only, and never written back: somebody trying a different mode for ten
+// minutes should not find their config quietly changed under them.
+config = command.ApplyTo(config);
+
+var host = new StationHost(config, command.MonitorOnly);
+using var window = new MainWindow(app, host, PlaceholderActivity.All(), version, configPath);
+
+window.WriteLog($"config: {configPath}");
+if (command.HasOverrides)
+{
+    window.WriteLog("config: overridden for this session by the command line, not saved");
+}
+
+IReadOnlyList<string> problems = config.Validate();
+if (problems.Count > 0)
+{
+    foreach (string problem in problems)
+    {
+        window.WriteLog($"settings: {problem}");
+    }
+
+    window.WriteLog("settings: press F5 to fix these - the station is not on the air");
+}
+else
+{
+    // Started in the background so the screen is up and readable even while a Flex is
+    // connecting or an UberSDR is being talked to, and so a failure lands in the log pane
+    // instead of on a terminal nobody is looking at any more.
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            await host.StartAsync().ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            app.Invoke(() => window.WriteLog($"station: could not start - {e.Message}"));
+        }
+    });
+}
+
+// SIGTERM (systemd, a package upgrade) and SIGINT get the same graceful path Ctrl+Q does: the
+// run loop is asked to stop, and the station is torn down below - PTT dropped, pipes closed.
+using PosixSignalRegistration term =
+    PosixSignalRegistration.Create(PosixSignal.SIGTERM, Stop);
+using PosixSignalRegistration interrupt =
+    PosixSignalRegistration.Create(PosixSignal.SIGINT, Stop);
+
+void Stop(PosixSignalContext context)
+{
+    context.Cancel = true;
+    app.Invoke(() => app.RequestStop());
+}
 
 app.Run(window);
+
+// Not in a finally: the run loop has ended by now either way, and this has to complete before
+// the process does. A transmitter left keyed by an untidy exit is the one failure that reaches
+// beyond this machine.
+await host.DisposeAsync();
 return 0;

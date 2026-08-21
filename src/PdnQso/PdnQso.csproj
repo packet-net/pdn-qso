@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <PackageReference Include="Terminal.Gui" />
+    <!-- The first-run wizard broadcasts for a FlexRadio to put in its list. -->
+    <PackageReference Include="M0LTE.Flex" />
   </ItemGroup>
 
   <ItemGroup>

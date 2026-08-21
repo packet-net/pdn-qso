@@ -16,6 +16,10 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/PdnQso.Link/PdnQso.Link.csproj" />
+    <!-- The app, for the parts of it that are pure and worth pinning: the config and its
+         validation, the command line, and the two line formatters the screen is made of.
+         Referencing an Exe is fine - its entry point is not imported. -->
+    <ProjectReference Include="../../src/PdnQso/PdnQso.csproj" />
   </ItemGroup>
 
 </Project>

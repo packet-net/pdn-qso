@@ -17,12 +17,33 @@ Everything it sends is an ordinary AX.25 UI frame inside the modem's own framing
 
 ## Status
 
-**Phase A, the foundations.** What exists today is the library every later phase sits on, and a skeleton UI that opens a window and quits on Ctrl+Q.
+**Phase A2, the screen and the radios.** Monitor works end to end over a real device: the four transports are wired, the station comes up from a config, and every frame heard is on the screen and in the frame log.
 
-- `PdnQso.Link` - the AX.25 link frame codec, the hermetic two-station audio rig (noise at a stated SNR, delay, dropouts), the station core (one device, one modem, a DCD-respecting transmit queue), the frame-log writer in the daemon's own SQLite schema, the power-control interface, and the device-string parser for `alsa:` / `flex:` / `ubersdr:` / `pipe:`.
-- `PdnQso` - a Terminal.Gui window and nothing else yet.
+- `PdnQso.Link` - the AX.25 link frame codec, the hermetic two-station audio rig (noise at a stated SNR, delay, dropouts), the station core (one device, one modem, a DCD-respecting transmit queue), the frame-log writer in the daemon's own SQLite schema, and the device layer: ALSA with CM108 or serial PTT, a FlexRadio over DAX with `rfpower` set and the forward-power meter read back, an UberSDR receiver, and a named-pipe pair for two copies of this tool on one machine.
+- `PdnQso` - the real screen: a status bar, the always-on Monitor pane with a text/hex toggle, an activity pane on the F-keys, a log pane, the settings dialog and a first-run wizard that lists this machine's sound cards and finds a FlexRadio on the network.
 
-Still to come: the settings screen and first-run wizard and the real device implementations (A2), the chat ARQ (B), the fountain code and file transfer (C), and the perf numbers (D). [docs/plan.md](docs/plan.md) has the why, [docs/design.md](docs/design.md) the how.
+Still to come: the chat ARQ (B), the fountain code and file transfer (C), and the perf numbers (D) - the three activities are placeholders that say so. [docs/plan.md](docs/plan.md) has the why, [docs/design.md](docs/design.md) the how.
+
+## Using it
+
+The first run, with no config, asks four questions: the radio, your callsign, the mode and where in the audio passband to put it. After that everything is in the settings dialog on F5, kept in `~/.config/pdn-qso/config.json`.
+
+```
+pdn-qso                                     start on the configured radio
+pdn-qso --monitor-only                      listen and log, never transmit
+pdn-qso --device flex:discover --mode qpsk2400 --callsign M0LTE-7
+pdn-qso --config /etc/pdn-qso-test.json     a second instance with its own settings
+```
+
+`--device`, `--mode` and `--callsign` are for that session only and are never written back.
+
+| Key | |
+|---|---|
+| F1 / F2 / F3 | Chat, File, Perf |
+| F4 | Monitor, full screen |
+| F5 | Settings |
+| F6 | payload as text or hex |
+| Ctrl+Q | quit |
 
 ## Building and running
 
