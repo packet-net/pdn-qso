@@ -1,0 +1,27 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- This repo is AGPL-3.0-or-later (see LICENSE). It links pdn-soundmodem
+         (GPL-3.0-or-later, permitted by GPLv3 section 13) and M0LTE.Flex (AGPL-3.0).
+         Do not change this to a permissive licence; see CLAUDE.md, Licence rules. -->
+    <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+    <Authors>Tom Fanning M0LTE and Packet.NET contributors</Authors>
+    <Company>Packet.NET</Company>
+    <Copyright>Copyright (c) 2026 Tom Fanning and Packet.NET contributors</Copyright>
+    <PackageProjectUrl>https://github.com/packet-net/pdn-qso</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/packet-net/pdn-qso</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+</Project>
