@@ -203,6 +203,81 @@ public class StationTests
     }
 
     [Fact]
+    public async Task A_Station_Hands_Out_The_Modem_It_Was_Built_Over()
+    {
+        // The chat ladder and the perf run both need the modem itself - one for MS110D's
+        // waveform lever, the other to measure a burst's air time - and reaching for it by
+        // casting to this class left every other IStation without one.
+        using AudioLink link = AudioLink.Create(Mode);
+        await using var station = new Station(
+            Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
+
+        station.Modem.Should().BeSameAs(link.ModemA);
+        ((IStation)station).Modem.Should().BeSameAs(link.ModemA);
+    }
+
+    [Fact]
+    public async Task A_Transmitted_Link_Frame_Is_Announced_With_Its_Decode_And_Its_Bytes()
+    {
+        using AudioLink link = AudioLink.Create(Mode);
+        await using var a = new Station(
+            Options("M0LTE-7"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
+        a.Start();
+
+        var sent = new List<(LinkFrame? Link, byte[] Bytes)>();
+        a.FrameTransmitted += (frame, bytes) => sent.Add((frame, bytes));
+
+        LinkFrame outgoing = a.Frame(LinkFrameType.Chat, 0x44, "on air"u8);
+        byte[] encoded = outgoing.Encode();
+        await a.SendAsync(outgoing);
+
+        sent.Should().ContainSingle();
+        sent[0].Bytes.Should().Equal(encoded, "Monitor renders the bytes that went out");
+        sent[0].Link.Should().NotBeNull();
+        sent[0].Link!.Source.Should().Be("M0LTE-7");
+        sent[0].Link!.Type.Should().Be(LinkFrameType.Chat);
+        sent[0].Link!.Session.Should().Be(0x44);
+    }
+
+    [Fact]
+    public async Task A_Transmitted_Frame_That_Is_Not_Ours_Is_Announced_With_A_Null_Link_Frame()
+    {
+        using AudioLink link = AudioLink.Create(Mode);
+        await using var a = new Station(
+            Options("M0LTE-7"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
+        a.Start();
+
+        var sent = new List<(LinkFrame? Link, byte[] Bytes)>();
+        a.FrameTransmitted += (frame, bytes) => sent.Add((frame, bytes));
+
+        // An AX.25 UI frame that is not one of ours: a beacon, or a frame from a test corpus.
+        byte[] beacon = new LinkFrame("G0OLD-1", LinkFrameType.Hello, 0).Encode();
+        beacon[LinkFrame.HeaderLength] = 0x99;
+        await a.SendRawAsync(beacon);
+
+        sent.Should().ContainSingle();
+        sent[0].Link.Should().BeNull("0x99 is not a link frame type");
+        sent[0].Bytes.Should().Equal(beacon);
+    }
+
+    [Fact]
+    public async Task A_Frame_Is_Announced_After_The_Transmitter_Has_Dropped()
+    {
+        using AudioLink link = AudioLink.Create(Mode);
+        await using var a = new Station(
+            Options("M0LTE-7"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
+        a.Start();
+
+        bool keyedWhenAnnounced = true;
+        a.FrameTransmitted += (_, _) => keyedWhenAnnounced = a.Transmitting;
+
+        await a.SendAsync(a.Frame(LinkFrameType.Chat, 1, "done"u8));
+
+        keyedWhenAnnounced.Should().BeFalse(
+            "the pane shows a transmission that happened, not one that is about to");
+    }
+
+    [Fact]
     public async Task A_Station_Reports_Its_Own_Callsign_Mode_And_Device()
     {
         using AudioLink link = AudioLink.Create(Mode);

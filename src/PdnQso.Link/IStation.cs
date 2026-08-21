@@ -35,6 +35,19 @@ public interface IStation : IAsyncDisposable
     IPowerControl Power { get; }
 
     /// <summary>
+    /// The modem underneath, for a caller that needs the mode's own controls - MS110D's
+    /// <c>IHardwareControllable</c> waveform lever, or the modulator, to measure a burst's air
+    /// time from its own sample count.
+    /// </summary>
+    /// <remarks>
+    /// On the contract rather than on the concrete station because the chat ladder and the perf
+    /// run both need it, and reaching for it by casting to <see cref="Station"/> made every
+    /// other implementation of this interface - a test's shared-medium wrapper, say - silently
+    /// lose the lever.
+    /// </remarks>
+    IModem Modem { get; }
+
+    /// <summary>
     /// Every frame heard that is one of ours, decoded. Fires after
     /// <see cref="RawFrameReceived"/> for the same frame.
     /// </summary>
@@ -46,6 +59,20 @@ public interface IStation : IAsyncDisposable
     /// point of the pane is to show it.
     /// </summary>
     event Action<byte[], FrameQuality>? RawFrameReceived;
+
+    /// <summary>
+    /// Every frame this station has finished transmitting: the decoded link frame when it is
+    /// one of ours and <see langword="null"/> when it is not (an ident, a raw frame from a
+    /// corpus), and the bytes that went on air either way.
+    /// </summary>
+    /// <remarks>
+    /// Raised after the transmitter has dropped, not before it comes up, so a Monitor pane
+    /// showing it is showing something that happened. It is the pane's other half: without it
+    /// an operator sees everybody's traffic but their own, and on a link where nothing is
+    /// coming back that is the one thing they need to be sure of. The frame log has always
+    /// recorded these; this is the same fact, on the screen.
+    /// </remarks>
+    event Action<LinkFrame?, byte[]>? FrameTransmitted;
 
     /// <summary>Opens the device and starts receiving.</summary>
     void Start();

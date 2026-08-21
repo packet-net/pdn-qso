@@ -1,6 +1,6 @@
 # pdn-qso - a hand-off tool for interactive two-way testing
 
-**Status: plan, 2026-08-21. No code exists.** Written at Tom's request for a tool somebody else can be handed: a small terminal UI over the pdn-soundmodem modems that lets two stations talk, move a file and measure a link, with no AX.25 node in the way.
+**Status: built, 2026-08-21. Phases A to E are in `main`.** Chat, File and Perf all run over a real station, the hand-off README is written, and the `.deb` pipeline ships. What is left is the bench session with the person it is handed to, and hardware: everything below has been exercised over the `pipe:` device and the hermetic channel rig, and not yet over a radio. Written at Tom's request for a tool somebody else can be handed: a small terminal UI over the pdn-soundmodem modems that lets two stations talk, move a file and measure a link, with no AX.25 node in the way.
 
 ## 1. What it is
 
@@ -51,6 +51,8 @@ The library's `pipe:` device and its Watterson channel give a two-station rig on
 | **E - hand-off** | `.deb`, a one-page README that starts with "plug in the widget, run `pdn-qso`", and a bench session with the person it is handed to | small |
 
 Phases B, C and D are independent of each other once A exists; A comes first because everything else sits on it.
+
+**What shipped, 2026-08-21.** A and A2 (the screen, the four devices, settings and the wizard), B (chat ARQ with a waveform ladder), C (the LT fountain and the file transfer), D (the stream and ping-pong measurements), then the wiring pass that put B, C and D on the screen as real activities, and E. Two copies of the program over a `pipe:` pair have held a conversation both ways with delivery ticks, moved a 2 kB file byte-exact, and taken a twenty-frame stream and a twenty-frame ping-pong with the row exported to CSV. The bench session and everything on a radio are still to come.
 
 ## 6. Open choices for Tom
 

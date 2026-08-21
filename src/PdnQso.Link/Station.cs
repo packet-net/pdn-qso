@@ -137,8 +137,7 @@ public sealed class Station : IStation
     /// <inheritdoc />
     public IPowerControl Power => _device.Power;
 
-    /// <summary>The modem underneath, for a caller that needs the mode's own controls -
-    /// MS110D's <c>IHardwareControllable</c> waveform lever, say.</summary>
+    /// <inheritdoc />
     public IModem Modem => _modem;
 
     /// <inheritdoc />
@@ -146,6 +145,9 @@ public sealed class Station : IStation
 
     /// <inheritdoc />
     public event Action<byte[], FrameQuality>? RawFrameReceived;
+
+    /// <inheritdoc />
+    public event Action<LinkFrame?, byte[]>? FrameTransmitted;
 
     /// <inheritdoc />
     public void Start()
@@ -191,6 +193,7 @@ public sealed class Station : IStation
 
         // One frame at a time. Everything above waits its turn rather than interleaving two
         // bursts into one keyup, which on air would be one unreadable frame instead of two.
+        byte[]? transmitted = null;
         await _transmit.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -204,13 +207,26 @@ public sealed class Station : IStation
             await _device.TransmitAsync(audio, cancellationToken).ConfigureAwait(false);
             _busy.Reset();
 
+            byte[] sent = ax25Frame.ToArray();
             _frameLog?.RecordTransmitted(
-                _options.SubChannel, ax25Frame.ToArray(), _modem.Mode,
+                _options.SubChannel, sent, _modem.Mode,
                 _options.AudioCentreHz, _options.RfHz);
+
+            transmitted = sent;
         }
         finally
         {
             _transmit.Release();
+        }
+
+        // After the transmitter has dropped, so what a subscriber shows is a transmission that
+        // has happened rather than one that is about to; and outside the transmit lock, so that
+        // a handler which answers by sending something is a slow handler rather than a
+        // deadlocked one.
+        if (transmitted is not null)
+        {
+            _ = LinkFrame.TryDecode(transmitted, out LinkFrame? link);
+            FrameTransmitted?.Invoke(link, transmitted);
         }
     }
 

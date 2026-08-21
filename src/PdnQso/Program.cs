@@ -6,6 +6,7 @@
 // testing (the config, the command line, the two line formatters) are pure and are.
 using System.Reflection;
 using System.Runtime.InteropServices;
+using Packet.SoundModem.Modems;
 using PdnQso;
 using PdnQso.Config;
 using PdnQso.Ui;
@@ -109,7 +110,26 @@ else
 config = command.ApplyTo(config);
 
 var host = new StationHost(config, command.MonitorOnly);
-using var window = new MainWindow(app, host, PlaceholderActivity.All(), version, configPath);
+
+// The activities need somewhere to log and the window needs the activities, so the log is a
+// closure over a variable the window is assigned to a line later. Nothing calls it before then:
+// an activity says nothing until it is attached to a station, which happens inside the window.
+MainWindow? logTarget = null;
+void ActivityLog(string line) => logTarget?.WriteLog(line);
+
+IReadOnlyList<IActivityView> activities =
+[
+    new ChatActivity(app, () => host.Config.ToChatOptions(), ActivityLog),
+    new FileActivity(
+        app,
+        () => host.Config.ResolvedDownloadDirectory,
+        () => host.Config.ToFileTransferOptions(),
+        ActivityLog),
+    new PerfActivity(app, () => PerfSettingsFor(host.Config), ActivityLog),
+];
+
+using var window = new MainWindow(app, host, activities, version, configPath);
+logTarget = window;
 
 window.WriteLog($"config: {configPath}");
 if (command.HasOverrides)
@@ -144,6 +164,16 @@ else
         }
     });
 }
+
+// What Perf needs beyond the station: the modem's own rate, so a burst's sample count becomes
+// air time, and TXDELAY, which is part of that air time.
+static PerfLinkSettings PerfSettingsFor(QsoConfig running) => new(
+    ModemCatalog.IsKnown(running.Mode)
+        ? ModemCatalog.DspRateFor(running.Mode)
+        : running.CaptureRateHz,
+    running.TxDelayMs,
+    running.ResolvedAudioCentreHz,
+    running.ResolvedPerfCsvPath);
 
 // SIGTERM (systemd, a package upgrade) and SIGINT get the same graceful path Ctrl+Q does: the
 // run loop is asked to stop, and the station is torn down below - PTT dropped, pipes closed.

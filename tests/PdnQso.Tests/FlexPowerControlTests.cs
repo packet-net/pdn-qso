@@ -64,7 +64,11 @@ public class FlexPowerControlTests
             // Somebody else's client moves it - which on a shared radio is exactly what happens.
             await client.SendCommandAsync("transmit set rfpower=25");
 
-            PowerReading reading = await power.ReadAsync();
+            // The command is answered on the command stream and the new value arrives a moment
+            // later on the status stream, so this waits for the fact rather than for a
+            // duration: reading straight after the write is a race, and it is the race that
+            // made this test fail about one run in five.
+            PowerReading reading = await WaitForSettingAsync(power, 25);
 
             reading.Unit.Should().Be(PowerUnit.Watts);
             reading.Setting.Should().Be(25, "the radio's answer is what shapes the transmission");
@@ -157,6 +161,22 @@ public class FlexPowerControlTests
         FlexPowerControl.ToWatts(15).Should().Be(15, "the 6000-series PA is 100 W");
         FlexPowerControl.ToLevel(15).Should().Be(15);
         FlexPowerControl.ToLevel(0.4).Should().Be(0, "the radio takes whole numbers");
+    }
+
+    /// <summary>
+    /// Reads until the radio reports <paramref name="watts"/>, or until patience runs out and
+    /// the last reading is returned for the assertion to fail on honestly.
+    /// </summary>
+    private static async Task<PowerReading> WaitForSettingAsync(FlexPowerControl power, double watts)
+    {
+        PowerReading reading = await power.ReadAsync();
+        for (int attempt = 0; attempt < 100 && reading.Setting != watts; attempt++)
+        {
+            await Task.Delay(20);
+            reading = await power.ReadAsync();
+        }
+
+        return reading;
     }
 
     private static async Task<PowerReading> WaitForMeasuredAsync(FlexPowerControl power)

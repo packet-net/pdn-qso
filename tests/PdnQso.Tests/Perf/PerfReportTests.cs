@@ -52,6 +52,72 @@ public class PerfReportTests
     }
 
     [Fact]
+    public void A_Device_String_With_Commas_In_It_Stays_One_Column()
+    {
+        // Every pipe device is spelled pipe:<in>,<out>,<rate>, so this is not an exotic case:
+        // it is what the row looks like whenever two copies of the program are tested against
+        // each other. Unquoted it made the row three columns wider than the header and shifted
+        // every number after it into the wrong field.
+        PerfReport report = SampleStreamReport() with
+        {
+            Device = "pipe:/tmp/pdn-qso-ab,/tmp/pdn-qso-ba,48000",
+        };
+
+        string[] header = PerfReport.CsvHeader.Split(',');
+        string[] row = SplitCsv(report.ToCsvRow());
+
+        row.Should().HaveSameCount(header);
+        row[Array.IndexOf(header, "device")]
+            .Should().Be("pipe:/tmp/pdn-qso-ab,/tmp/pdn-qso-ba,48000");
+        int sentIndex = Array.IndexOf(header, "frames_sent");
+        int.Parse(row[sentIndex], CultureInfo.InvariantCulture).Should().Be(20);
+    }
+
+    /// <summary>Splits one RFC 4180 row: commas separate, quotes protect, "" is a quote.</summary>
+    private static string[] SplitCsv(string row)
+    {
+        var fields = new List<string>();
+        var field = new System.Text.StringBuilder();
+        bool quoted = false;
+        for (int i = 0; i < row.Length; i++)
+        {
+            char c = row[i];
+            if (quoted)
+            {
+                if (c != '"')
+                {
+                    field.Append(c);
+                }
+                else if (i + 1 < row.Length && row[i + 1] == '"')
+                {
+                    field.Append('"');
+                    i++;
+                }
+                else
+                {
+                    quoted = false;
+                }
+            }
+            else if (c == '"')
+            {
+                quoted = true;
+            }
+            else if (c == ',')
+            {
+                fields.Add(field.ToString());
+                field.Clear();
+            }
+            else
+            {
+                field.Append(c);
+            }
+        }
+
+        fields.Add(field.ToString());
+        return [.. fields];
+    }
+
+    [Fact]
     public void To_Text_Contains_Mode_Device_Fer_And_Goodput()
     {
         PerfReport report = SampleStreamReport();

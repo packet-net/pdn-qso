@@ -86,15 +86,15 @@ public sealed class WaveformLadder
     /// Builds the ladder for a station, if its modem has one.
     /// </summary>
     /// <remarks>
-    /// Reaches through <see cref="Station.Modem"/> because that is where the lever is;
-    /// <see cref="IStation"/> deliberately talks only in link frames. A station of some other
-    /// implementation gets a disabled ladder, which is the right answer rather than a failure.
+    /// Reaches through <see cref="IStation.Modem"/> because that is where the lever is. A modem
+    /// that is not <c>IHardwareControllable</c>, or a mode with no ladder, gets a disabled
+    /// ladder, which is the right answer rather than a failure.
     /// </remarks>
     public static WaveformLadder ForStation(IStation station, IReadOnlyList<int>? steps = null)
     {
         ArgumentNullException.ThrowIfNull(station);
-        IModem? modem = station is Station concrete ? concrete.Modem : null;
-        return new WaveformLadder(modem as IHardwareControllable, modem?.Mode, steps);
+        IModem modem = station.Modem;
+        return new WaveformLadder(modem as IHardwareControllable, modem.Mode, steps);
     }
 
     /// <summary>A ladder that does nothing, for a modem that has no lever.</summary>

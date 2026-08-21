@@ -1,5 +1,7 @@
 using PdnQso.Config;
+using PdnQso.Link.Chat;
 using PdnQso.Link.Devices;
+using PdnQso.Link.Transfer;
 
 namespace PdnQso.Tests;
 
@@ -238,5 +240,87 @@ public class QsoConfigTests : IDisposable
         options.AudioCentreHz.Should().Be(1500);
         options.RfFrequencyHz.Should().Be(14_105_000);
         options.CaptureRateHz.Should().Be(48_000);
+    }
+    [Fact]
+    public void The_Config_Turns_Into_The_Chat_Options_The_Ladder_And_The_Arq_Read()
+    {
+        ChatOptions options = (Good() with
+        {
+            AckTimeoutMs = 4500,
+            MaxRetries = 7,
+            StepWaveform = false,
+        }).ToChatOptions();
+
+        options.AckTimeoutBase.Should().Be(TimeSpan.FromMilliseconds(4500));
+        options.MaxRetries.Should().Be(7);
+        options.StepWaveform.Should().BeFalse();
+        options.MaxTextBytes.Should().Be(
+            new ChatOptions().MaxTextBytes, "the rest keeps the library's default");
+
+        Action validate = options.Validate;
+        validate.Should().NotThrow();
+    }
+
+    [Fact]
+    public void The_Config_Turns_Into_The_Fountain_Shape_The_Transfer_Uses()
+    {
+        FileTransferOptions options = (Good() with { FountainC = 0.05, FountainDelta = 0.2 })
+            .ToFileTransferOptions();
+
+        options.Fountain.C.Should().Be(0.05);
+        options.Fountain.Delta.Should().Be(0.2);
+
+        Action validate = options.Validate;
+        validate.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Downloads_And_The_Perf_Csv_Have_Defaults_Under_The_Home_Directory()
+    {
+        var bare = new QsoConfig();
+
+        bare.ResolvedDownloadDirectory.Should().Be(QsoConfig.DefaultDownloadDirectory);
+        bare.ResolvedDownloadDirectory.Should().EndWith("pdn-qso-received");
+        bare.ResolvedPerfCsvPath.Should().Be(QsoConfig.DefaultPerfCsvPath);
+        bare.ResolvedPerfCsvPath.Should().EndWith("pdn-qso-perf.csv");
+
+        (bare with { DownloadDirectory = "/srv/qso/in" }).ResolvedDownloadDirectory
+            .Should().Be("/srv/qso/in");
+        (bare with { PerfCsvPath = "/srv/qso/perf.csv" }).ResolvedPerfCsvPath
+            .Should().Be("/srv/qso/perf.csv");
+    }
+
+    [Fact]
+    public void A_Relative_Download_Directory_Is_Refused_Because_Nobody_Knows_Where_It_Lands()
+    {
+        (Good() with { DownloadDirectory = "received" }).Validate()
+            .Should().ContainSingle().Which.Should().StartWith("Download directory:");
+        (Good() with { PerfCsvPath = "perf.csv" }).Validate()
+            .Should().ContainSingle().Which.Should().StartWith("Perf CSV:");
+        (Good() with { DownloadDirectory = "/tmp/received", PerfCsvPath = "/tmp/perf.csv" })
+            .Validate().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_Config_From_Before_These_Settings_Existed_Still_Loads()
+    {
+        // Migration is by omission: a key that is not there takes its default, and a key this
+        // version has never heard of is ignored rather than refused. An operator's config
+        // outliving one release of the tool is the whole point.
+        string path = Path_("older.json");
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(
+            path,
+            "{ \"callsign\": \"M0LTE-7\", \"mode\": \"qpsk2400\", \"a_key_from_a_later_version\": 42 }");
+
+        QsoConfig? read = QsoConfig.Load(path);
+
+        read.Should().NotBeNull();
+        read!.Callsign.Should().Be("M0LTE-7");
+        read.Mode.Should().Be("qpsk2400");
+        read.StepWaveform.Should().BeTrue("a missing field takes its default");
+        read.DownloadDirectory.Should().BeNull();
+        read.ResolvedDownloadDirectory.Should().Be(QsoConfig.DefaultDownloadDirectory);
+        read.PerfCsvPath.Should().BeNull();
     }
 }
