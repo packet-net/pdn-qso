@@ -1,0 +1,73 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+      # The xUnit v3 / MTP test apphosts (OutputType=Exe) resolve the runtime via DOTNET_ROOT;
+      # the runner's distro dotnet lives outside the apphost's default search paths
+      # (/usr/share/dotnet, /etc/dotnet/install_location), so register it explicitly or every
+      # test invocation dies with "You must install .NET".
+      - name: Register .NET root for MTP apphosts
+        run: echo "DOTNET_ROOT=$(dirname "$(readlink -f "$(which dotnet)")")" >> "$GITHUB_ENV"
+      # Restore past the HTTP cache. These runners are self-hosted and keep their NuGet cache
+      # between jobs indefinitely, so a dependency published minutes ago is invisible here while
+      # nuget.org already serves it. That is every PR that bumps pdn-soundmodem just after
+      # cutting it - the build then fails with "Unable to find package ... Nearest version:
+      # <the one before>", which reads like a typo in the version rather than a stale index.
+      - name: Restore (bypassing the NuGet HTTP cache)
+        run: dotnet restore --no-http-cache
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+      - name: Test
+        run: dotnet test --configuration Release --no-build
+
+      # A red build that does not name the test is a reproduce-and-guess cycle every time. The
+      # MTP runner prints only "Failed: 1" and writes the names to a log on the runner, which is
+      # not this machine and is not uploaded - so surface it here. The file is UTF-16, which is
+      # why plain grep finds nothing in it, and it records only failures and skips.
+      - name: Name the failures
+        if: failure()
+        run: |
+          found=0
+          while IFS= read -r f; do
+            found=1
+            echo "::group::$(basename "$f")"
+            log="$(iconv -f UTF-16LE -t UTF-8 "$f" 2>/dev/null || cat "$f")"
+            # MTP writes ANSI colour codes into the log; the per-test "failed <name>" lines
+            # start with an escape sequence, so an unstripped ^failed grep names nothing.
+            log="$(sed 's/\x1b\[[0-9;]*m//g' <<<"$log")"
+            grep -A 6 -E "^failed |^\s+failed " <<<"$log" | head -120 || true
+            echo "--- tail ---"
+            grep -vE "^\s*$" <<<"$log" | tail -40
+            echo "::endgroup::"
+          done < <(find tests -path '*/TestResults/*.log' -newermt '-30 minutes' 2>/dev/null)
+          [ "$found" = 1 ] || echo "::warning::no TestResults log found to report"
+
+      # Smoke-build the .deb so packaging breakage surfaces here rather than at the moment
+      # somebody cuts a tag. amd64 only - the arch-specific part is one SDK flag.
+      - name: Package smoke build (.deb)
+        run: |
+          set -euo pipefail
+          debian/build-deb.sh 0.0.0-ci amd64 ./artifacts
+          # Capture the listing once and match it in memory. Piping dpkg-deb straight into
+          # `grep -q` makes grep close the pipe the moment it matches, and the SIGPIPE dpkg-deb
+          # takes for that becomes a pipeline failure under pipefail.
+          listing="$(dpkg-deb --contents ./artifacts/pdn-qso_0.0.0-ci_amd64.deb)"
+          grep -q 'usr/lib/pdn-qso/pdn-qso$' <<<"$listing"
+          grep -q 'usr/bin/pdn-qso ->' <<<"$listing"
+          grep -q 'usr/share/doc/pdn-qso/copyright$' <<<"$listing"
+          # The frame log is SQLite, and its native shim is published loose beside the bundle.
+          grep -q 'usr/lib/pdn-qso/libe_sqlite3\.so$' <<<"$listing"
+          # This is a program somebody runs, not a service. A unit file in here means the
+          # packaging has drifted into pdn-soundmodem's shape by accident.
+          if grep -q 'systemd' <<<"$listing"; then
+            echo "::error::the .deb ships a systemd unit - pdn-qso is a user-run tool"
+            exit 1
+          fi

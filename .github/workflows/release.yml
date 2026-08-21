@@ -1,0 +1,203 @@
+name: release
+
+# The release pipeline for a `v*` tag: test, build the .deb packages for amd64/arm64/armhf, and
+# attach them to a GitHub Release whose notes are written from the PR titles merged since the
+# previous tag.
+#
+# workflow_dispatch builds everything and leaves it as workflow artifacts without releasing
+# anything - a full dry run of the pipeline. Set `publish: true` to also cut the Release.
+#
+# There is no NuGet step: pdn-qso is an application, not a library. Nothing here is meant to be
+# consumed as a package.
+#
+# Runs as a single job on purpose: the runner is self-hosted and memory-bounded, so the three
+# self-contained publishes go one at a time, and keeping them in one job avoids shuttling
+# ~30 MB artifacts between jobs to do it.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, without the leading v (e.g. 0.2.0 or 0.2.0-rc1)'
+        required: true
+      publish:
+        description: 'Also cut the GitHub Release'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, Linux, X64]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the release notes are written from first-parent history between tags
+
+      # The xUnit v3 / MTP test apphosts (OutputType=Exe) resolve the runtime via DOTNET_ROOT;
+      # the runner's distro dotnet lives outside the apphost's default search paths, so register
+      # it explicitly or every test invocation dies with "You must install .NET". Same fix as
+      # ci.yml.
+      - name: Register .NET root for MTP apphosts
+        run: echo "DOTNET_ROOT=$(dirname "$(readlink -f "$(which dotnet)")")" >> "$GITHUB_ENV"
+
+      - name: Preflight
+        run: |
+          # dpkg-deb ships in the Essential `dpkg` package, so this only trips if the runner is
+          # not Debian-family - in which case it cannot build .debs at all.
+          command -v dpkg-deb >/dev/null || {
+            echo "::error::dpkg-deb is missing - this job needs a Debian-family runner"
+            exit 1
+          }
+          command -v gh >/dev/null || { echo "::error::gh CLI is missing on this runner"; exit 1; }
+          command -v python3 >/dev/null || { echo "::error::python3 is missing on this runner"; exit 1; }
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          version="${version#v}"
+          if [ -z "$version" ]; then
+            echo "::error::no version (tag v* or the version input is required)"
+            exit 1
+          fi
+          # Debian is stricter than SemVer: a version must start with a digit.
+          case "$version" in
+            [0-9]*) ;;
+            *) echo "::error::version '$version' must start with a digit"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          # A hyphen means a SemVer prerelease (0.2.0-rc1); mark the release accordingly.
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.publish }}" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Restore past the HTTP cache. This runner is self-hosted and keeps its NuGet cache
+      # between jobs forever, so a dependency published minutes ago is invisible to it while
+      # nuget.org already serves the package - which is every release cut just after a
+      # pdn-soundmodem bump. An ephemeral runner never sees this; ours would see it every time.
+      - name: Restore (bypassing the NuGet HTTP cache)
+        run: dotnet restore --no-http-cache
+
+      - name: Test
+        run: dotnet test --configuration Release --no-restore
+
+      # Same reason as ci.yml: the runner prints only "Failed: N" and writes the names to a
+      # UTF-16 log on the runner that nobody downstream ever sees. A release that refuses to
+      # publish is the pipeline working - but it has to say what it refused over.
+      - name: Name the failures
+        if: failure()
+        run: |
+          found=0
+          while IFS= read -r f; do
+            found=1
+            echo "::group::$(basename "$f")"
+            log="$(iconv -f UTF-16LE -t UTF-8 "$f" 2>/dev/null || cat "$f")"
+            log="$(sed 's/\x1b\[[0-9;]*m//g' <<<"$log")"
+            grep -A 6 -E "^failed |^\s+failed " <<<"$log" | head -120 || true
+            echo "--- tail ---"
+            grep -vE "^\s*$" <<<"$log" | tail -40
+            echo "::endgroup::"
+          done < <(find tests -path '*/TestResults/*.log' -newermt '-30 minutes' 2>/dev/null)
+          [ "$found" = 1 ] || echo "::warning::no TestResults log found to report"
+
+      - name: Build .deb packages
+        run: |
+          set -euo pipefail
+          # Pin the changelog date to the commit being built so a rebuild of a tag is
+          # byte-identical. %ct is always a Unix timestamp, unlike the event payload's
+          # pushed_at, which is an integer for push events and an ISO string elsewhere.
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          for arch in amd64 arm64 armhf; do
+            echo "::group::deb $arch"
+            debian/build-deb.sh "${{ steps.version.outputs.version }}" "$arch" ./artifacts
+            echo "::endgroup::"
+          done
+
+      - name: Verify .deb contents
+        run: |
+          set -euo pipefail
+          for deb in ./artifacts/*.deb; do
+            echo "::group::$(basename "$deb")"
+            dpkg-deb --info "$deb"
+            # Capture the listing once and match it in memory. Piping dpkg-deb straight into
+            # `grep -q` makes grep close the pipe the moment it matches, and the SIGPIPE
+            # dpkg-deb takes for that becomes a pipeline failure under pipefail.
+            listing="$(dpkg-deb --contents "$deb")"
+            echo "$listing"
+            grep -q 'usr/lib/pdn-qso/pdn-qso$' <<<"$listing"
+            grep -q 'usr/bin/pdn-qso ->' <<<"$listing"
+            grep -q 'usr/share/doc/pdn-qso/copyright$' <<<"$listing"
+            # The frame log is SQLite, and its native shim is published loose beside the bundle.
+            grep -q 'usr/lib/pdn-qso/libe_sqlite3\.so$' <<<"$listing"
+            # A user-run tool ships no unit file and seeds no config.
+            if grep -q 'systemd\|etc/pdn-qso' <<<"$listing"; then
+              echo "::error::this .deb looks like a service - pdn-qso is a user-run tool"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Checksums
+        working-directory: ./artifacts
+        run: |
+          sha256sum *.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdn-qso-${{ steps.version.outputs.version }}
+          path: |
+            artifacts/*.deb
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+
+      - name: GitHub Release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # One bullet per merged PR (or direct commit) since the previous tag, grouped by kind,
+          # from first-parent history - no rehashed install text, no API calls.
+          python3 scripts/release-notes.py "$TAG" > /tmp/pdn-qso-relnotes.md
+          cat /tmp/pdn-qso-relnotes.md
+
+          prerelease=""
+          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then prerelease="--prerelease"; fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists - replacing its assets and notes"
+            gh release upload "$TAG" ./artifacts/*.deb ./artifacts/SHA256SUMS --clobber
+            gh release edit "$TAG" --notes-file /tmp/pdn-qso-relnotes.md
+          else
+            gh release create "$TAG" \
+              ./artifacts/*.deb ./artifacts/SHA256SUMS \
+              --target "$GITHUB_SHA" \
+              --title "pdn-qso $VERSION" \
+              --notes-file /tmp/pdn-qso-relnotes.md \
+              $prerelease
+          fi
