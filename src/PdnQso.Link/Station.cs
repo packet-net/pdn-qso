@@ -51,23 +51,33 @@ public sealed class Station : IStation
     /// when omitted.</param>
     /// <exception cref="ArgumentException">The modem's DSP rate is not the device's sample
     /// rate, so one of them would be running at the wrong speed and nothing would decode.</exception>
+    /// <param name="dspRateHz">The sample rate the modem was built for, when the caller knows it
+    /// (<see cref="Create"/> always does); a modem's reported mode name is not always a
+    /// catalogue key, so this is the authoritative figure for the rate check.</param>
     public Station(
         StationOptions options,
         IAudioDevice device,
         IModem modem,
         IBusyGate? busy = null,
         FrameLogWriter? frameLog = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        int? dspRateHz = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(device);
         ArgumentNullException.ThrowIfNull(modem);
 
-        int modemRate = ModemCatalog.DspRateFor(modem.Mode);
-        if (modemRate != device.SampleRate)
+        // The rate check guards against a modem and a device running at different speeds.
+        // A modem's self-reported Mode is not always a catalogue key (fsk9600-il2p reports
+        // fsk9600-il2pc, for which the catalogue answers a different rate), so the caller
+        // who built the modem passes the rate it asked for; without it the check runs only
+        // when the reported mode is a name the catalogue knows.
+        int? modemRate = dspRateHz
+            ?? (ModemCatalog.KnownModes.Contains(modem.Mode) ? ModemCatalog.DspRateFor(modem.Mode) : null);
+        if (modemRate is { } rate && rate != device.SampleRate)
         {
             throw new ArgumentException(
-                $"mode '{modem.Mode}' runs at {modemRate} Hz and device '{device.Name}' at "
+                $"mode '{modem.Mode}' runs at {rate} Hz and device '{device.Name}' at "
                 + $"{device.SampleRate} Hz - nothing would decode",
                 nameof(modem));
         }
@@ -103,7 +113,7 @@ public sealed class Station : IStation
     {
         ArgumentNullException.ThrowIfNull(device);
         IModem modem = ModemCatalog.Create(mode, device.SampleRate, _ => { }, modemOptions);
-        return new Station(options, device, modem, busy: null, frameLog, timeProvider);
+        return new Station(options, device, modem, busy: null, frameLog, timeProvider, ModemCatalog.DspRateFor(mode));
     }
 
     /// <inheritdoc />
