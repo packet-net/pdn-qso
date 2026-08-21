@@ -189,6 +189,42 @@ instead of answering when it arrived, no way for a caller to know a receiving ru
 and (filed as #11 rather than fixed) a finished receiver whose Done frames are all lost going
 quiet while the sender spends its whole patience on it.
 
+### 6e. An answer in hand beats its own stopwatch
+
+Issue #12 recorded a frame that occasionally went missing on a noiseless link and put it down to
+the modem. It was not the modem. Driven directly, with nothing of this repo in the path, the
+modems decoded five thousand frames out of five thousand under a dozen CPU burners; the fault was
+here, and it was not a lost frame at all. It was a lost **answer**.
+
+The shape of it, and the rule that comes out of it:
+
+- **A timeout is only a timeout when the answer is not already in hand.** `Task.WaitAsync(timeout)`
+  is a race between the answer and the timer, and a `TaskCompletionSource` that runs its
+  continuations asynchronously - which every one of ours does, because answering from inside the
+  far station's transmit would re-enter it - hands the answer's continuation to the thread pool
+  and lets the timer fire while it is still queued. On the wall clock that window is nanoseconds
+  wide. On a clock a test drives it is however long the machine takes to give the task a thread,
+  and the timer fires the instant the settle loop decides to move time on. `ChatSession` was
+  retransmitting lines the far end had acknowledged, and `PerfRun`'s frame wait was reporting an
+  answer it had decoded as no answer at all. Both now ask what arrived rather than who won.
+- **Measure where it happened, not where it was noticed.** A round trip read when the waiting
+  task next gets a thread includes the machine's queue, which on a busy box is the larger of the
+  two numbers. The acknowledgement's arrival is stamped in the receive handler and the
+  transmission's end in the transmit pump, and the figure is the difference between those.
+- **A flag that says "work in hand" has to stay up for the whole of the work.** `FileReceiver`
+  raised it while frames sat in its inbox and while it was transmitting, and put it down in
+  between - which is where the last symbol is peeled, the CRC checked and the file written. The
+  clock could be moved through that gap, and the sender then poured symbols at a receiver that
+  was about to say Done. It now covers the turn, and is put down only for the waits: the poll
+  and the Done linger, which are over when the clock says so and would otherwise be waiting for
+  a clock that was waiting for them.
+
+The general form of the last one is already the rule at the top of this section. The first two
+are the same rule from the other side: **a decision must not depend on which continuation the
+machine ran first either.** Both are real on the air as well - a needless retransmission costs air
+time, and a round-trip figure that is really a thread-pool measurement is not a measurement - so
+the fix belongs in the library rather than in a bigger margin in the rig.
+
 ## 7. Phases and agents
 
 A (skeleton + Monitor + devices + settings) first; then B (chat ARQ), C (fountain + file), D (perf) in parallel; E (packaging, README, hand-off). Each phase is a PR with its own tests; the skeleton phase also brings `ci.yml` and `release.yml` (copied in shape from pdn-soundmodem, self-hosted runner labels, release notes from PR titles via `scripts/release-notes.py`).

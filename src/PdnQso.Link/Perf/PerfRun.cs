@@ -122,11 +122,12 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         {
             using var wait = new FrameWait(
                 station,
+                _time,
                 (frame, _) => frame.Type == LinkFrameType.PerfPong && frame.Session == session);
             await station.SendAsync(
                 station.Frame(LinkFrameType.PerfPing, session), cancellationToken).ConfigureAwait(false);
             (LinkFrame Frame, FrameQuality Quality)? answer =
-                await wait.AnswerAsync(options.SummaryTimeout, _time, cancellationToken)
+                await wait.AnswerAsync(options.SummaryTimeout, cancellationToken)
                     .ConfigureAwait(false);
             if (answer is { } received && PerfWire.TryDecodeSummary(received.Frame.Payload.Span, out PerfWire.Summary decoded))
             {
@@ -316,25 +317,31 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         for (int i = 0; i < options.PingCount; i++)
         {
             ushort seq = (ushort)i;
-            DateTimeOffset sentAt = _time.GetUtcNow();
+            long sentAt = _time.GetTimestamp();
             byte[] pingPayload = PerfWire.EncodePingPayload(seq, 0);
 
             // Listen first, so a pong that comes back inside our own transmit is not missed,
             // but start the clock on the timeout only once the probe is actually on air. Armed
             // before the send, the timeout is running through this station's own TXDELAY and
             // modulation, and can in principle expire against a frame that has not left yet.
-            using var wait = new FrameWait(station, (frame, quality) => IsPongFor(frame, session, seq));
+            using var wait = new FrameWait(
+                station, _time, (frame, quality) => IsPongFor(frame, session, seq));
 
             await station.SendAsync(
                 station.Frame(LinkFrameType.PerfPing, session, pingPayload), cancellationToken)
                 .ConfigureAwait(false);
             (LinkFrame Frame, FrameQuality Quality)? answer =
-                await wait.AnswerAsync(options.PingTimeout, _time, cancellationToken)
+                await wait.AnswerAsync(options.PingTimeout, cancellationToken)
                     .ConfigureAwait(false);
 
             if (answer is not null)
             {
-                double rtt = (_time.GetUtcNow() - sentAt).TotalMilliseconds;
+                // From when the probe went out to when the answer was decoded, both stamped
+                // where they happened. Read at this point instead, the figure would include
+                // however long this task waited for a thread, which is the machine's number
+                // and not the link's.
+                double rtt = Math.Max(
+                    0, _time.GetElapsedTime(sentAt, wait.ArrivedAt ?? _time.GetTimestamp()).TotalMilliseconds);
                 heard++;
                 rttSum += rtt;
                 worstRtt = worstRtt is null ? rtt : Math.Max(worstRtt.Value, rtt);
@@ -470,22 +477,37 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
     private sealed class FrameWait : IDisposable
     {
         private readonly IStation _station;
+        private readonly TimeProvider _time;
         private readonly TaskCompletionSource<(LinkFrame, FrameQuality)> _found =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private readonly Func<LinkFrame, FrameQuality, bool> _predicate;
+        private long _arrivedAt;
+        private int _claimed;
+        private int _arrived;
         private bool _disposed;
 
-        public FrameWait(IStation station, Func<LinkFrame, FrameQuality, bool> predicate)
+        public FrameWait(IStation station, TimeProvider time, Func<LinkFrame, FrameQuality, bool> predicate)
         {
             _station = station;
+            _time = time;
             _predicate = predicate;
             _station.FrameReceived += OnFrame;
         }
 
+        /// <summary>
+        /// The timestamp at which the answer was decoded, or null while none has been.
+        /// </summary>
+        /// <remarks>
+        /// Stamped in the receive handler, so a round-trip time measures the link rather than
+        /// how long this task waited for a thread. The stamp is written before the flag that
+        /// publishes it, so a reader that sees the flag sees the time that goes with it.
+        /// </remarks>
+        public long? ArrivedAt => Volatile.Read(ref _arrived) == 0 ? null : Volatile.Read(ref _arrivedAt);
+
         /// <summary>The frame, or null if none arrived inside <paramref name="timeout"/>.</summary>
         public async Task<(LinkFrame Frame, FrameQuality Quality)?> AnswerAsync(
-            TimeSpan timeout, TimeProvider time, CancellationToken cancellationToken)
+            TimeSpan timeout, CancellationToken cancellationToken)
         {
             if (_found.Task.IsCompleted)
             {
@@ -497,10 +519,18 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
             using var expired = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             try
             {
-                Task winner = await Task
-                    .WhenAny(_found.Task, Task.Delay(timeout, time, expired.Token))
+                await Task
+                    .WhenAny(_found.Task, Task.Delay(timeout, _time, expired.Token))
                     .ConfigureAwait(false);
-                return winner == _found.Task ? await _found.Task.ConfigureAwait(false) : null;
+
+                // Which task WhenAny names as the winner is not the question. The answer and
+                // the timer can complete at the same moment, and the one this loop is told
+                // about first is then decided by the machine's queue rather than by the link.
+                // A frame this station has already decoded is an answer, whatever the
+                // stopwatch says, so the answer is what is asked.
+                return _found.Task.IsCompletedSuccessfully
+                    ? await _found.Task.ConfigureAwait(false)
+                    : null;
             }
             finally
             {
@@ -521,10 +551,15 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
 
         private void OnFrame(LinkFrame frame, FrameQuality quality)
         {
-            if (_predicate(frame, quality))
+            if (!_predicate(frame, quality)
+                || Interlocked.CompareExchange(ref _claimed, 1, 0) != 0)
             {
-                _found.TrySetResult((frame, quality));
+                return;
             }
+
+            Volatile.Write(ref _arrivedAt, _time.GetTimestamp());
+            Volatile.Write(ref _arrived, 1);
+            _found.TrySetResult((frame, quality));
         }
     }
 }

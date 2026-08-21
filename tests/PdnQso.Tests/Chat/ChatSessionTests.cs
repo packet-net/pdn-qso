@@ -29,10 +29,7 @@ public class ChatSessionTests
         ChatDelivery result = await rig.RunAsync(rig.A.SendAsync("good evening, 59 in reading"));
 
         result.IsDelivered.Should().BeTrue();
-        // Not exactly one: a retry here would mean the modem underneath dropped the line or its
-        // acknowledgement on a noiseless link, which happens rarely and is its business, not
-        // this session's (issue #12). What the ARQ promises is that the line gets through.
-        result.Attempts.Should().BeLessThanOrEqualTo(2);
+        result.Attempts.Should().Be(1);
 
         // The old assertion here was that the round trip was positive, which on the wall clock
         // only ever meant "some real time went by while the machine did the work". On the
@@ -54,13 +51,46 @@ public class ChatSessionTests
         }
 
         rig.A.Outstanding.Should().BeNull("nothing is in flight once the line is acknowledged");
-        rig.A.Stats.Sent.Should().Be(1);
-        rig.A.Stats.Delivered.Should().Be(1);
-        rig.A.Stats.Failed.Should().Be(0);
-        rig.A.Stats.Received.Should().Be(0);
-        rig.A.Stats.Duplicates.Should().Be(0);
-        rig.A.Stats.Retries.Should().Be(result.Attempts - 1, "a retry is an attempt past the first");
+        rig.A.Stats.Should().Be(new ChatStats(Sent: 1, Delivered: 1, Failed: 0, Retries: 0, Received: 0, Duplicates: 0));
         rig.B.Stats.Received.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task An_Acknowledgement_Already_In_Hand_Beats_Its_Own_Patience()
+    {
+        await using ChatRig rig = ChatRig.Create(
+            FastMode, Options() with { AckTimeout = TimeSpan.FromSeconds(2) });
+        List<ChatMessage> heard = Collect(rig.B);
+        rig.StartAll();
+
+        // Subscribed after the sessions have started, so this runs second and the session has
+        // already taken the acknowledgement in by the time the clock jumps. That is the moment
+        // the fix is about: the answer is in hand, the patience it was racing runs out, and
+        // nothing has yet been given a thread to notice the answer with. Six seconds is three
+        // times the patience, so on the old reading the line went out again for an answer the
+        // station had already decoded, and the round trip came back as the size of the jump.
+        rig.StationA.FrameReceived += (frame, _) =>
+        {
+            if (frame.Type == LinkFrameType.ChatAck)
+            {
+                rig.Clock.Advance(TimeSpan.FromSeconds(6));
+            }
+        };
+
+        ChatDelivery result = await rig.RunAsync(rig.A.SendAsync("good evening, 59 in reading"));
+
+        result.IsDelivered.Should().BeTrue();
+        result.Attempts.Should().Be(
+            1, "the acknowledgement arrived; time moving on afterwards is not a lost answer");
+        result.RoundTrip.Should().Be(
+            TimeSpan.Zero, "the answer took no time at all, and the jump came after it");
+        rig.A.Stats.Retries.Should().Be(0);
+        rig.Clock.Elapsed.Should().BeGreaterThanOrEqualTo(
+            TimeSpan.FromSeconds(6), "the clock really was moved past the patience");
+        lock (heard)
+        {
+            heard.Should().ContainSingle("the line went out once");
+        }
     }
 
     [Fact]
@@ -337,8 +367,7 @@ public class ChatSessionTests
         ChatDelivery next = await rig.RunAsync(rig.A.SendAsync("better now"));
 
         next.IsDelivered.Should().BeTrue();
-        next.Attempts.Should().BeLessThanOrEqualTo(
-            2, "the point is that the stepped-down waveform gets through, not how few goes it took");
+        next.Attempts.Should().Be(1);
         lock (heard)
         {
             heard.Should().ContainSingle();
@@ -372,7 +401,7 @@ public class ChatSessionTests
         {
             ChatDelivery result = await rig.A.SendAsync($"line {line} of three");
             result.IsDelivered.Should().BeTrue();
-            result.Attempts.Should().BeLessThanOrEqualTo(2, "the channel is clean");
+            result.Attempts.Should().Be(1, "the channel is clean");
         }
 
         rig.A.CurrentWaveform.Should().Be(7, "three first-time deliveries earn a step up");

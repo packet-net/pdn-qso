@@ -1,4 +1,3 @@
-using System.Globalization;
 using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Devices;
@@ -89,14 +88,13 @@ public class PerfActivityModelTests : IDisposable
         await receiving;
 
         report.FramesSent.Should().Be(8);
+        report.FramesHeard.Should().Be(8);
 
-        // The pane's job is to show what the run measured, so that is what is checked against.
-        // Pinning "heard 8" here would be asserting that the modem underneath decodes every
-        // frame on a noiseless link, which is its business and not this pane's (issue #12).
         ShouldHaveRow(atSender.Table, "procedure", "stream");
         ShouldHaveRow(atSender.Table, "sent", "8");
-        ShouldHaveRow(atSender.Table, "heard", report.FramesHeard.ToString(CultureInfo.InvariantCulture));
-        ShouldHaveRow(atSender.Table, "lost", report.FramesLost.ToString(CultureInfo.InvariantCulture));
+        ShouldHaveRow(atSender.Table, "heard", "8");
+        ShouldHaveRow(atSender.Table, "lost", "0");
+        ShouldHaveRow(atSender.Table, "frame errors", "0.0%");
         atSender.Table.Should().Contain(row => row.Contains("@ 1500 Hz", StringComparison.Ordinal));
         atSender.Table.Should().Contain(row => row.Contains("audiolink:A", StringComparison.Ordinal));
         atSender.StatusLine.Should().StartWith("idle, ");

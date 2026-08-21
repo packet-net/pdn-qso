@@ -67,29 +67,20 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         FileTransferResult received = await rig.RunAsync(receiving, receiver);
 
         sent.Success.Should().BeTrue(sent.FailureReason);
-
-        // K is 512 / 64, and the fountain's systematic pass carries a clean channel with no
-        // repair. The allowance is for the modem underneath: on a loaded machine it very
-        // occasionally does not decode a frame even on a noiseless link (issue #12), and how
-        // reliably a modem decodes is not a claim this layer gets to make. What is asserted is
-        // the fountain's own arithmetic, which holds either way.
-        sent.Symbols.Should().BeInRange(8, 11, "eight is the systematic pass");
-        sent.RepairSymbols.Should().Be(sent.Symbols - 8, "everything past the pass is repair");
+        sent.Symbols.Should().Be(8, "K is 512 / 64, and a clean channel needs no repair");
+        sent.RepairSymbols.Should().Be(0);
 
         received.Success.Should().BeTrue(received.FailureReason);
-        received.Symbols.Should().BeLessThanOrEqualTo(
-            sent.Symbols, "the receiver cannot take in more than the sender put out");
-        received.Symbols.Should().BeGreaterThanOrEqualTo(
-            8, "it decoded the file, so it had at least K symbols");
+        received.Symbols.Should().Be(8);
         received.BlockCount.Should().Be(8);
         received.Name.Should().Be("notes.txt");
         received.Path.Should().NotBeNull();
         File.ReadAllBytes(received.Path!).Should().Equal(content);
 
-        senderProgress.Should().HaveCount(sent.Symbols, "one report per symbol sent");
+        senderProgress.Should().HaveCount(8);
         senderProgress[^1].Role.Should().Be(FileTransferRole.Sender);
-        receiverProgress.Should().NotBeEmpty();
-        receiverProgress[^1].Decoded.Should().Be(8, "all eight blocks decoded in the end");
+        receiverProgress.Should().HaveCount(8);
+        receiverProgress[^1].Decoded.Should().Be(8);
         receiverProgress[^1].Fraction.Should().Be(1.0);
     }
 
@@ -392,6 +383,66 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         Func<Task> send = () => sender.SendAsync("empty.bin", ReadOnlyMemory<byte>.Empty);
 
         await send.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task A_Receiver_Is_Busy_While_It_Works_Out_What_It_Heard()
+    {
+        await using var rig = Rig.Build(AudioChannel.Clean);
+        FileTransferOptions options = Fast();
+        var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
+
+        // Read from inside the receiver's own progress event, which is raised after the symbol
+        // has come off the inbox and before any answer has gone out. That is the moment the
+        // flag used to be down: nothing queued and nothing transmitting, but the symbol still
+        // being peeled and the file still to be checked and written. A clock driven past that
+        // moment times the sender out against a Done that was on its way, and the transfer
+        // costs symbols it did not need.
+        var busyWhileDeciding = new List<bool>();
+        receiver.Progress += _ =>
+        {
+            lock (busyWhileDeciding)
+            {
+                busyWhileDeciding.Add(receiver.Busy);
+            }
+        };
+
+        using var stop = new CancellationTokenSource();
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(stop.Token);
+
+        // One offer and one symbol, by hand, so that the inbox is provably empty by the time
+        // the symbol is being worked on. A whole transfer would do as well most of the time
+        // and not always: two symbols can be waiting at once, and then the queue alone would
+        // hold the flag up and the claim would not have been tested.
+        byte[] content = Content(options.BlockSize, seed: 7);
+        var encoder = new LtEncoder(content, options.BlockSize, new LtParameters());
+        var offer = new FileOfferPayload(
+            0x0BADF00D, "one.bin", content.Length, encoder.BlockCount, encoder.BlockSize,
+            Crc32.Compute(content), encoder.Parameters);
+        await rig.A.SendAsync(rig.A.Frame(LinkFrameType.FileOffer, session: 0x21, offer.Encode()));
+
+        byte[] body = new byte[FileSymbolPayload.HeaderLength + encoder.BlockSize];
+        FileSymbolPayload.WriteHeader(body, 0);
+        encoder.Symbol(0, body.AsSpan(FileSymbolPayload.HeaderLength));
+        await rig.A.SendAsync(rig.A.Frame(LinkFrameType.FileSymbol, session: 0x21, body));
+
+        await VirtualTime.WaitForAsync(() =>
+        {
+            lock (busyWhileDeciding)
+            {
+                return busyWhileDeciding.Count > 0;
+            }
+        });
+
+        lock (busyWhileDeciding)
+        {
+            busyWhileDeciding.Should().AllBeEquivalentTo(
+                true, "a receiver that has taken a frame in owes an answer until it has sent one");
+        }
+
+        await stop.CancelAsync();
+        Func<Task> finish = () => receiving;
+        await finish.Should().ThrowAsync<OperationCanceledException>();
     }
 
     /// <summary>
