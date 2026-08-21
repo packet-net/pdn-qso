@@ -3,8 +3,14 @@
 #
 #   debian/build-deb.sh <version> [amd64|arm64|armhf] [outdir]
 #
-# Produces <outdir>/pdn-qso_<version>_<arch>.deb containing a self-contained single-file
-# build (no .NET runtime dependency on the target). Default outdir is <repo>/artifacts.
+# Produces <outdir>/pdn-qso_<arch>.deb containing a self-contained single-file build (no .NET
+# runtime dependency on the target). Default outdir is <repo>/artifacts.
+#
+# The version is deliberately not in the file name, though it is of course in the package's
+# own control data. The release attaches these under the same names every time, so
+# https://github.com/packet-net/pdn-qso/releases/latest/download/pdn-qso_<arch>.deb is a URL
+# that always points at the current release and never has to be rewritten: it is what
+# `pdn-qso --upgrade` fetches, and what a README or a wiki page can link to and leave alone.
 #
 # Unlike pdn-soundmodem, this is a program somebody runs, not a service: no systemd unit, no
 # system user, and no seeded config. Settings are per user and pdn-qso writes them to
@@ -111,6 +117,6 @@ Description: Interactive two-way testing over the pdn-soundmodem modems
 EOF
 
 mkdir -p "$OUTDIR"
-DEB="$OUTDIR/pdn-qso_${VERSION}_${ARCH}.deb"
+DEB="$OUTDIR/pdn-qso_${ARCH}.deb"
 dpkg-deb --build --root-owner-group "$STAGE/root" "$DEB"
 echo "built: $DEB"

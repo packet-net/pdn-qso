@@ -68,6 +68,21 @@ public class CommandLineTests
     }
 
     [Fact]
+    public void Upgrade_Is_A_Switch_And_Takes_No_Value()
+    {
+        CommandLine.Parse(["--upgrade"]).Upgrade.Should().BeTrue();
+        CommandLine.Parse([]).Upgrade.Should().BeFalse();
+    }
+
+    [Fact]
+    public void The_Help_Lists_Upgrade()
+    {
+        // A command nobody is told about is a command nobody runs, and this one is how the
+        // person handed the tool gets the next version.
+        CommandLine.HelpText("0.3.0").Should().Contain("--upgrade");
+    }
+
+    [Fact]
     public void A_Config_Path_Replaces_The_Default()
     {
         CommandLine.Parse(["--config", "/etc/pdn-qso.json"]).ResolvedConfigPath

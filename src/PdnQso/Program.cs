@@ -10,6 +10,7 @@ using Packet.SoundModem.Modems;
 using PdnQso;
 using PdnQso.Config;
 using PdnQso.Ui;
+using PdnQso.Upgrade;
 using Terminal.Gui.App;
 using Terminal.Gui.Input;
 using Terminal.Gui.Views;
@@ -45,6 +46,20 @@ if (command.ShowHelp)
 {
     Console.WriteLine(CommandLine.HelpText(version));
     return 0;
+}
+
+if (command.Upgrade)
+{
+    // Before any config is read and long before a station comes up: this replaces the program
+    // on disc and has nothing to do with the radio.
+    using var upgrading = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        upgrading.Cancel();
+    };
+
+    return await SelfUpgrade.RunAsync(version, Console.WriteLine, upgrading.Token);
 }
 
 string configPath = command.ResolvedConfigPath;

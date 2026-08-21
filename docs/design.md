@@ -105,6 +105,38 @@ activity that focuses its own input as it is built focuses nothing. The same app
 up: in Terminal.Gui a view whose container cannot be focused is unreachable from the keyboard
 however focusable it is itself, so the panes and each activity's root view set `CanFocus`.
 
+## 6c. Packaging and the upgrade
+
+The release attaches one `.deb` per architecture under a name with **no version in it**:
+`pdn-qso_amd64.deb`, `pdn-qso_arm64.deb`, `pdn-qso_armhf.deb`. The version is in the package's
+own control data, where dpkg reads it, and in the release title. That makes
+`releases/latest/download/pdn-qso_<arch>.deb` a URL that always points at the current release
+and never has to be rewritten, which is what a README, a wiki page, and `pdn-qso --upgrade` can
+all rely on.
+
+`--upgrade` is the whole update story: there is no apt repository to add, no key to trust and
+no background check. It
+
+1. maps this **process's** architecture (not `dpkg --print-architecture`, which would name the
+   kernel's) to a package name;
+2. asks GitHub for `latest/download/<name>` and reads the tag out of the **first** redirect.
+   GitHub answers with a 302 to `releases/download/<tag>/<name>` and only then with a second
+   redirect to a signed URL on another host that carries no tag at all, so the first hop is
+   where the version is, and the second hop's URL is the one to download: the bytes fetched are
+   the bytes of the release just identified even if another is published in between. No API
+   call, no token, no rate limit;
+3. stops if the versions match, and stops if the running copy is ahead (a build from source
+   says `1.0.0`, because that is what the SDK stamps when no tag named it);
+4. downloads the package and the release's own `SHA256SUMS` and refuses to install anything
+   that is not in that file or does not match it;
+5. installs with `apt-get install --yes --reinstall`, through `sudo` when not root, because the
+   package depends on `libasound2 | libasound2t64` and an alternation is exactly what dpkg
+   cannot resolve on its own. With neither root nor sudo it leaves the download in place, prints
+   the command, and exits 1.
+
+Everything above except the network and the process call is in `ReleaseAsset`, which is pure
+and tested; `SelfUpgrade` is the thin shell around it.
+
 ## 7. Phases and agents
 
 A (skeleton + Monitor + devices + settings) first; then B (chat ARQ), C (fountain + file), D (perf) in parallel; E (packaging, README, hand-off). Each phase is a PR with its own tests; the skeleton phase also brings `ci.yml` and `release.yml` (copied in shape from pdn-soundmodem, self-hosted runner labels, release notes from PR titles via `scripts/release-notes.py`).
