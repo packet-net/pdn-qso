@@ -2,6 +2,7 @@ using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Perf;
 using PdnQso.Tests.Time;
+using PdnQso.Tests.Rig;
 
 namespace PdnQso.Tests.Perf;
 
@@ -30,12 +31,19 @@ public class PerfStreamTests
     {
         var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
-        await using var sender = new Station(
+
+        // Both ends on one medium, as the transfer rigs are. Without it the two stations can be
+        // inside the same channel object at the same moment, which is not a collision but a data
+        // race, and it cost this suite a stream frame about one run in ten.
+        using var medium = new HalfDuplexChannel();
+        await using var senderStation = new Station(
             Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
-        await using var receiver = new Station(
+        await using var receiverStation = new Station(
             Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
-        sender.Start();
-        receiver.Start();
+        senderStation.Start();
+        receiverStation.Start();
+        IStation sender = medium.Wrap(senderStation);
+        IStation receiver = medium.Wrap(receiverStation);
 
         var senderRun = new PerfRun(clock);
         var receiverRun = new PerfRun(clock);
@@ -83,12 +91,19 @@ public class PerfStreamTests
     {
         var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
-        await using var sender = new Station(
+
+        // Both ends on one medium, as the transfer rigs are. Without it the two stations can be
+        // inside the same channel object at the same moment, which is not a collision but a data
+        // race, and it cost this suite a stream frame about one run in ten.
+        using var medium = new HalfDuplexChannel();
+        await using var senderStation = new Station(
             Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
-        await using var receiver = new Station(
+        await using var receiverStation = new Station(
             Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
-        sender.Start();
-        receiver.Start();
+        senderStation.Start();
+        receiverStation.Start();
+        IStation sender = medium.Wrap(senderStation);
+        IStation receiver = medium.Wrap(receiverStation);
 
         const int frameCount = 10;
         const int payloadSize = 32;

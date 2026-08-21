@@ -5,6 +5,7 @@ using PdnQso.Link.Audio;
 using PdnQso.Link.Transfer;
 using PdnQso.Link.Fountain;
 using PdnQso.Tests.Time;
+using PdnQso.Tests.Rig;
 
 namespace PdnQso.Tests.Transfer;
 

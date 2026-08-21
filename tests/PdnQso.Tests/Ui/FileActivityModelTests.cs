@@ -4,6 +4,7 @@ using PdnQso.Link.Transfer;
 using PdnQso.Tests.Transfer;
 using PdnQso.Ui;
 using PdnQso.Tests.Time;
+using PdnQso.Tests.Rig;
 
 namespace PdnQso.Tests.Ui;
 

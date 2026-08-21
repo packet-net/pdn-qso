@@ -2,7 +2,7 @@ using Packet.SoundModem.Modems;
 using PdnQso.Link;
 using PdnQso.Link.Devices;
 
-namespace PdnQso.Tests.Transfer;
+namespace PdnQso.Tests.Rig;
 
 /// <summary>
 /// One shared medium: whichever station is transmitting, the other one waits.

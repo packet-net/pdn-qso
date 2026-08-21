@@ -3,6 +3,7 @@ using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Perf;
 using PdnQso.Tests.Time;
+using PdnQso.Tests.Rig;
 
 namespace PdnQso.Tests.Perf;
 
@@ -31,12 +32,19 @@ public class PerfPingPongTests
     {
         var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
-        await using var pinger = new Station(
+
+        // Both ends on one medium, as the transfer rigs are. Without it the two stations can be
+        // inside the same channel object at the same moment, which is not a collision but a data
+        // race, and it cost this suite a stream frame about one run in ten.
+        using var medium = new HalfDuplexChannel();
+        await using var pingerStation = new Station(
             Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
-        await using var responder = new Station(
+        await using var responderStation = new Station(
             Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
-        pinger.Start();
-        responder.Start();
+        pingerStation.Start();
+        responderStation.Start();
+        IStation pinger = medium.Wrap(pingerStation);
+        IStation responder = medium.Wrap(responderStation);
 
         var responderRun = new PerfRun(clock);
         using var responderCts = new CancellationTokenSource();
@@ -74,12 +82,19 @@ public class PerfPingPongTests
     {
         var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
-        await using var pinger = new Station(
+
+        // Both ends on one medium, as the transfer rigs are. Without it the two stations can be
+        // inside the same channel object at the same moment, which is not a collision but a data
+        // race, and it cost this suite a stream frame about one run in ten.
+        using var medium = new HalfDuplexChannel();
+        await using var pingerStation = new Station(
             Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
-        await using var responder = new Station(
+        await using var responderStation = new Station(
             Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
-        pinger.Start();
-        responder.Start();
+        pingerStation.Start();
+        responderStation.Start();
+        IStation pinger = medium.Wrap(pingerStation);
+        IStation responder = medium.Wrap(responderStation);
 
         // A hand-rolled responder that answers every ping except sequence 1, so the run's own
         // loss counting is what is under test - not AudioChannel's dropout mechanics, which
