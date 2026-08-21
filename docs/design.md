@@ -211,6 +211,14 @@ The shape of it, and the rule that comes out of it:
   task next gets a thread includes the machine's queue, which on a busy box is the larger of the
   two numbers. The acknowledgement's arrival is stamped in the receive handler and the
   transmission's end in the transmit pump, and the figure is the difference between those.
+- **The party waiting for an answer needs a flag too, not just the party that owes one.** The
+  rule above has always been written from the responder's side: an answer is owed from the
+  instant the frame is taken in. The asking side has the same gap and had nothing to say about
+  it. What a probe is waiting for arrives on the far station's transmitting thread, and the
+  asking run resumes whenever the machine next gives it a thread; move the clock through that
+  and the probe's own patience fires against a reply the station has already decoded.
+  `PerfRun.Answered` is the flag, in the shape of `AudioLink.Carrying`: raised where the frame
+  is decoded, put down where the run takes it up.
 - **A flag that says "work in hand" has to stay up for the whole of the work.** `FileReceiver`
   raised it while frames sat in its inbox and while it was transmitting, and put it down in
   between - which is where the last symbol is peeled, the CRC checked and the file written. The

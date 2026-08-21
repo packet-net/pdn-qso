@@ -157,9 +157,14 @@ public class PerfPingPongTests
             }
         });
 
-        bool Busy() => link.Carrying || Volatile.Read(ref owed) > 0;
-
         var pingerRun = new PerfRun(clock);
+
+        // Both ends of the exchange, not just the far one. The responder owes a reply from the
+        // moment it takes the ping in; this end has been given the reply from the moment its
+        // station decodes it, and is not done with it until its own loop has been given a
+        // thread to notice. Move the clock through either gap and the probe's patience fires
+        // against an answer that had already arrived.
+        bool Busy() => link.Carrying || Volatile.Read(ref owed) > 0 || pingerRun.Answered;
         // The one unanswered ping is the only thing that may time out. On the wall clock this
         // was a three second timeout that a busy CI runner beat, and the run then counted two
         // losses instead of one; on this clock the timeout is three seconds of the protocol's

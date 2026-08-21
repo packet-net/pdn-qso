@@ -35,6 +35,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
 {
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private volatile bool _listening;
+    private volatile FrameWait? _waiting;
 
     /// <summary>
     /// True once a receiving run has subscribed and would hear a frame arriving now.
@@ -47,6 +48,20 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
     /// answer is to wait for this rather than to assume.
     /// </remarks>
     public bool Listening => _listening;
+
+    /// <summary>
+    /// True while an answer this run was waiting for has been decoded and the run has not yet
+    /// acted on it.
+    /// </summary>
+    /// <remarks>
+    /// The other half of <see cref="Listening"/>, and the same rule as a responder's "an answer
+    /// is owed": what a probe is waiting for arrives on the far station's transmitting thread,
+    /// and this run resumes whenever the machine next gives it a thread. In between, nothing
+    /// else says anything is happening. A test driving a clock of its own must not move it
+    /// through that gap, or it fires this run's own patience against a reply the station has
+    /// already decoded and counts a probe as lost that was answered.
+    /// </remarks>
+    public bool Answered => _waiting?.ArrivedAt is not null;
 
     /// <summary>A running report fired after each frame sent or answered, for a UI to show a
     /// measurement filling in as it happens rather than only at the end.</summary>
@@ -124,11 +139,22 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
                 station,
                 _time,
                 (frame, _) => frame.Type == LinkFrameType.PerfPong && frame.Session == session);
-            await station.SendAsync(
-                station.Frame(LinkFrameType.PerfPing, session), cancellationToken).ConfigureAwait(false);
-            (LinkFrame Frame, FrameQuality Quality)? answer =
-                await wait.AnswerAsync(options.SummaryTimeout, cancellationToken)
+            _waiting = wait;
+            (LinkFrame Frame, FrameQuality Quality)? answer;
+            try
+            {
+                await station.SendAsync(
+                    station.Frame(LinkFrameType.PerfPing, session), cancellationToken).ConfigureAwait(false);
+                answer = await wait.AnswerAsync(options.SummaryTimeout, cancellationToken)
                     .ConfigureAwait(false);
+            }
+            finally
+            {
+                // Cleared here rather than in the handler: this is the point at which the run
+                // has actually taken the answer up. See Answered.
+                _waiting = null;
+            }
+
             if (answer is { } received && PerfWire.TryDecodeSummary(received.Frame.Payload.Span, out PerfWire.Summary decoded))
             {
                 summary = decoded;
@@ -326,13 +352,22 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
             // modulation, and can in principle expire against a frame that has not left yet.
             using var wait = new FrameWait(
                 station, _time, (frame, quality) => IsPongFor(frame, session, seq));
-
-            await station.SendAsync(
-                station.Frame(LinkFrameType.PerfPing, session, pingPayload), cancellationToken)
-                .ConfigureAwait(false);
-            (LinkFrame Frame, FrameQuality Quality)? answer =
-                await wait.AnswerAsync(options.PingTimeout, cancellationToken)
+            _waiting = wait;
+            (LinkFrame Frame, FrameQuality Quality)? answer;
+            try
+            {
+                await station.SendAsync(
+                    station.Frame(LinkFrameType.PerfPing, session, pingPayload), cancellationToken)
                     .ConfigureAwait(false);
+                answer = await wait.AnswerAsync(options.PingTimeout, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                // Cleared here rather than in the handler: this is the point at which the run
+                // has actually taken the answer up. See Answered.
+                _waiting = null;
+            }
 
             if (answer is not null)
             {
