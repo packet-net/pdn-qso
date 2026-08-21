@@ -8,14 +8,14 @@ A single self-contained program (`pdn-qso`, name open) with a full-screen termin
 
 | Mode | What you see | What goes on air |
 |---|---|---|
-| **Monitor** | every frame heard: time, callsigns, modem, SNR, carrier offset, quality, the payload as text or hex | nothing |
+| **Monitor** (a pane that is always on screen) | every frame heard: time, callsigns, modem, SNR, carrier offset, quality, the payload as text or hex | nothing |
 | **Chat** | a two-pane keyboard-to-keyboard conversation with delivery ticks | short acknowledged messages |
 | **File** | progress of a transfer in either direction, with the receiver's "have / need" count | rateless (fountain-coded) blocks and small status frames |
 | **Perf** | a table of numbers: frames sent / heard / delivered, goodput, mean and worst SNR, round-trip time, time on air | a scripted stream of numbered frames, or a chat-style ping-pong |
 
 Devices: **Flex** (6000-series over the LAN: DAX audio + PTT, power settable), **CM108** (any sound card plus the CM108 GPIO PTT widget, the bench rig), **UberSDR** (a public web receiver, receive only: Monitor mode, or the receive half of a two-way test with a transmitter elsewhere).
 
-Settings are few and all visible on one screen: device, modem mode, audio centre, callsign, TX delay, audio levels, Flex power, ident interval. First run is a short wizard; after that a JSON file under `~/.config/pdn-qso/`.
+Settings are few and all visible on one screen: device, modem mode, audio centre, callsign, TX delay, audio levels, power (Flex rfpower with watts read back; CM108 via the card's playback mixer), ident interval. First run is a short wizard; after that a JSON file under `~/.config/pdn-qso/`.
 
 ## 2. What it is not
 

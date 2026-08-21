@@ -1,6 +1,6 @@
 # pdn-qso - design
 
-Binding on layout, protocol and conventions. Written 2026-08-21 from [plan.md](plan.md) and Tom's decisions: name `pdn-qso`; Flex power exposed in the UI; Monitor writes the daemon's frame-log format; the ARQ may step the MS110D waveform down or up; licence AGPL-3.0-or-later; built with sub-agents.
+Binding on layout, protocol and conventions. Written 2026-08-21 from [plan.md](plan.md) and Tom's decisions: name `pdn-qso`; power control on every transmit-capable device (Flex through `rfpower` with the radio's watts read back, CM108 and any ALSA card through the card's playback mixer volume); Monitor is a pane that is always on screen, not a mode; Monitor writes the daemon's frame-log format; the ARQ may step the MS110D waveform down or up; licence AGPL-3.0-or-later; built with sub-agents.
 
 ## 1. Projects
 
@@ -37,13 +37,17 @@ byte 1   session id (random per conversation / transfer / run), then type-specif
 
 LT codes (Luby 2002) with the robust soliton distribution (MacKay's exposition, parameters c and delta exposed as settings with sane defaults), a systematic first pass, XOR combining, and a peeling decoder that keeps undecodable symbols until a new one releases them. `PdnQso.Link.Fountain` is a pure unit with no I/O: tests pin decode completion against the predicted overhead at several K, and that a corrupted symbol (the CRC catches it at the modem layer, so it is simply absent) only delays completion.
 
+## 4a. Power
+
+One `IPowerControl` in the station, implemented per device: **Flex** sets `rfpower` through `M0LTE.Flex` and reads the forward-power meter back, so the UI shows "set 10 W, reading 9.6 W"; **ALSA/CM108** sets the playback mixer volume of the selected card (the simple mixer API of libasound through a small P/Invoke, or `amixer` if that proves simpler - either way the control name and card are discovered, not assumed, and the UI shows the percentage and dB the mixer reports); **UberSDR** has none. Perf's ladder runs step power through this interface. The station ceiling on Tom's Flex (15 W) is honoured by refusing settings above what the radio reports as its maximum, never by clamping silently.
+
 ## 5. The station core
 
 `Station` owns one device (input + output + PTT, or input only for UberSDR), one `IModem`, the busy detector, the transmit queue (one frame at a time, DCD-respecting, TX delay from settings, ident per the library's `StationIdentifier` rules), and the frame-log writer. Everything above it talks in link frames; everything below it is the library. Receive is always on; the modem is autobaud where the waveform allows.
 
 ## 6. The UI
 
-Terminal.Gui 2.4.x. Layout: a status bar (device, mode, centre, PTT and DCD lamps, last SNR, correspondent); a main pane that is the current mode's view; a log pane; F-keys for mode switching and the settings dialog. Settings (all in the dialog, persisted to `~/.config/pdn-qso/config.json`): device string, callsign, modem mode, audio centre, TX delay ms, audio in/out gain, Flex power (watts, with the radio's read-back beside it), ident interval and callsign, ARQ timeouts and retries, fountain c/delta, frame-log path. First run, with no config: a wizard that lists ALSA cards, discovers Flex radios, or takes an UberSDR host, then the callsign, then the mode.
+Terminal.Gui 2.4.x. Layout: a status bar (device, mode, centre, power, PTT and DCD lamps, last SNR, correspondent); the **Monitor pane, always on screen** (every frame heard, scrolling, with callsigns, modem, SNR, offset and quality - full height when no activity is selected, a lower pane otherwise); a main pane for the active activity (Chat, File, Perf); F-keys for switching activity and for the settings dialog. Settings (all in the dialog, persisted to `~/.config/pdn-qso/config.json`): device string, callsign, modem mode, audio centre, TX delay ms, audio in/out gain, power (watts on Flex with the read-back beside it; mixer percentage on a sound card), ident interval and callsign, ARQ timeouts and retries, fountain c/delta, frame-log path. First run, with no config: a wizard that lists ALSA cards, discovers Flex radios, or takes an UberSDR host, then the callsign, then the mode.
 
 ## 7. Phases and agents
 
