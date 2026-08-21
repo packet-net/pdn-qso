@@ -29,7 +29,7 @@ byte 1   session id (random per conversation / transfer / run), then type-specif
 ```
 
 - **Chat**: `seq(1)` + UTF-8 text. Stop-and-wait: send, wait `ackTimeout` (derived from the mode's frame time plus a fixed margin), retry up to `maxRetries` with a backoff that waits for DCD clear plus a random slot. `CHAT-ACK` carries the seq. The UI shows sent / delivered / failed per line. **Waveform step-down/up**: when the modem is MS110D and two consecutive retries fail, the station asks the modem to step to the next more robust waveform (8 -> 7 -> 6 -> 5 -> 4 -> 2) and tells the correspondent in the next frame's header flag; after `stepUpAfter` consecutive clean deliveries it steps back up one. The correspondent's receiver is autobaud, so nothing is negotiated.
-- **File**: `FILE-OFFER` (file id, name, size, block size K, CRC-32 of the file); `FILE-SYMBOL` (symbol index, then the LT-coded payload; the receiver regenerates the degree and neighbour set from the index with the agreed PRNG seed); `FILE-STATUS` from the receiver every `statusInterval` (decoded n of K); `FILE-DONE` when decoded and the CRC matches. The sender emits the K source symbols first (systematic), then repair symbols until DONE or a patience limit. Block size is the mode's payload capacity minus the header.
+- **File**: `FILE-OFFER` (file id, name, size, block size K, CRC-32 of the file); `FILE-SYMBOL` (symbol index, then the LT-coded payload; the receiver regenerates the degree and neighbour set from the index with the agreed PRNG seed); `FILE-STATUS` from the receiver every `statusInterval` (decoded n of K); `FILE-DONE` when decoded and the CRC matches. The sender emits the K source symbols first (systematic), then repair symbols until DONE or a patience limit. Block size is the mode's payload capacity minus the header. The receiver goes on repeating its DONE whenever it hears the sender again, and stops only when it has heard nothing from it for a whole patience (or when somebody offers it another file): a DONE the channel eats leaves the sender pouring symbols at a station that has finished, and what the repeat has to cover is a number of the sender's turns rather than a fixed number of seconds. That was issue #11, and the measurement behind the rule is the ladder in `DoneLingerLadderTests`.
 - **Perf**: `PERF-STREAM` frames of a fixed size with a running sequence and a timestamp; the receiver counts and reports. `PERF-PING`/`PONG` through the chat ARQ for round-trip time. The numbers pane shows sent, heard, delivered, frame error rate, goodput (payload bytes per second of air time, air time from the modem's own burst length), mean / worst / last SNR, RTT mean / worst, mode, centre, device; `Export` writes a CSV row and a text summary.
 - **HELLO**: on start and on demand, so the other side's callsign appears in the status bar.
 
@@ -186,7 +186,7 @@ Driving this found five defects in the library that the wall clock had been cove
 timeout armed before the frame it timed had been sent, two timeouts whose timers were left
 running after the answer arrived, a receiver that sat on a queued frame until its next poll tick
 instead of answering when it arrived, no way for a caller to know a receiving run had started,
-and (filed as #11 rather than fixed) a finished receiver whose Done frames are all lost going
+and (filed as #11, and fixed since) a finished receiver whose Done frames are all lost going
 quiet while the sender spends its whole patience on it.
 
 ### 6e. An answer in hand beats its own stopwatch

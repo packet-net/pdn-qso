@@ -33,7 +33,8 @@ public sealed record FileTransferOptions
     /// <summary>
     /// How many silent status intervals either end tolerates before deciding the other has
     /// gone away. The sender's patience is <see cref="Patience"/>; the receiver uses the same
-    /// span waiting for symbols.
+    /// span waiting for symbols, and again after the file is on disc, waiting to hear whether
+    /// the sender is still there.
     /// </summary>
     public int PatienceIntervals { get; init; } = 6;
 
@@ -56,18 +57,17 @@ public sealed record FileTransferOptions
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(50);
 
     /// <summary>
-    /// How long the receiver goes on answering after it has sent Done, in case the Done was
-    /// lost and the sender is still pouring symbols at a file that is already on disc.
-    /// </summary>
-    public TimeSpan DoneLinger { get; init; } = TimeSpan.FromSeconds(20);
-
-    /// <summary>
     /// A hard ceiling on symbols sent, or 0 for none. Patience is the normal stop; this is for
     /// a caller that wants a transfer bounded in air time whatever the other end says.
     /// </summary>
     public int MaxSymbols { get; init; }
 
-    /// <summary>How long either end waits in silence before giving up.</summary>
+    /// <summary>
+    /// How long either end waits in silence before giving up, and therefore also how long a
+    /// receiver that has the whole file goes on repeating its Done after the last thing it
+    /// heard from the sender: however patient the sender is, is how long it may still be
+    /// pouring symbols at a station that has finished.
+    /// </summary>
     public TimeSpan Patience => StatusInterval * PatienceIntervals;
 
     /// <summary>Throws if these options are not usable.</summary>
@@ -95,12 +95,6 @@ public sealed record FileTransferOptions
             throw new ArgumentOutOfRangeException(
                 nameof(PatienceIntervals), PatienceIntervals,
                 "a station that gives up before the first status has not tried");
-        }
-
-        if (DoneLinger < TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(DoneLinger), DoneLinger, "a linger cannot be negative");
         }
 
         if (MaxSymbols < 0)
