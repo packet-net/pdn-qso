@@ -63,17 +63,52 @@ public class ChatSessionTests
         List<ChatMessage> heard = Collect(rig.B);
         rig.StartAll();
 
-        // Subscribed after the sessions have started, so this runs second and the session has
-        // already taken the acknowledgement in by the time the clock jumps. That is the moment
-        // the fix is about: the answer is in hand, the patience it was racing runs out, and
-        // nothing has yet been given a thread to notice the answer with. Six seconds is three
-        // times the patience, so on the old reading the line went out again for an answer the
-        // station had already decoded, and the round trip came back as the size of the jump.
+        // Subscribed after the sessions have started, so this runs second on the same frame and
+        // the session has already taken the acknowledgement in and stamped it. That is the
+        // moment the fix is about: the answer is in hand, the patience it was racing runs out,
+        // and nothing has yet been given a thread to notice the answer with. Six seconds is
+        // three times the patience, so on the old reading the line went out again for an answer
+        // the station had already decoded, and the round trip came back as the size of the jump.
+        //
+        // Two things this handler may not assume. It assumed both, and both of them lost on
+        // loaded full-suite runs.
+        //
+        // It does not get to the clock first. The stamp it is standing behind is the thing that
+        // released the sending task, on whatever core the pool had spare, so the line can be
+        // delivered and this test's assertions run while this handler is still queued. Waiting
+        // for the fact below is what puts that right; assuming the order never was.
+        //
+        // And the jump must not land inside the sending end's own measurement of the burst it
+        // has just put out. That station released the channel before the far end answered, and
+        // its pump stamps the burst's air time and finish afterwards - so a jump made in this
+        // window is charged to the burst, and comes back as a round trip the size of the jump.
+        // Sending is up from the moment a frame is posted and down only once the pump has
+        // stamped what it measured, which makes it exactly the fact to wait for.
+        Exception? jumpFailed = null;
+        bool jumped = false;
         rig.StationA.FrameReceived += (frame, _) =>
         {
-            if (frame.Type == LinkFrameType.ChatAck)
+            if (frame.Type != LinkFrameType.ChatAck)
             {
+                return;
+            }
+
+            try
+            {
+                // A fact and not a deadline, in the shape VirtualTime.WaitForAsync has: this
+                // handler is a synchronous one, so it spins rather than awaiting.
+                SpinWait.SpinUntil(() => !rig.A.Sending);
                 rig.Clock.Advance(TimeSpan.FromSeconds(6));
+            }
+            catch (Exception failure)
+            {
+                // A station swallows whatever escapes a receive handler, so an exception thrown
+                // here would otherwise be reported as the clock simply not having moved.
+                jumpFailed = failure;
+            }
+            finally
+            {
+                Volatile.Write(ref jumped, true);
             }
         };
 
@@ -85,6 +120,12 @@ public class ChatSessionTests
         result.RoundTrip.Should().Be(
             TimeSpan.Zero, "the answer took no time at all, and the jump came after it");
         rig.A.Stats.Retries.Should().Be(0);
+
+        // The jump runs on the far end's transmitting thread and this task was released by the
+        // stamp that precedes it, so waiting for it is the whole difference between a claim
+        // about the clock and a race with it.
+        await ChatRig.WaitUntilAsync(() => Volatile.Read(ref jumped));
+        jumpFailed.Should().BeNull("moving the clock is this test's own work and it must not throw");
         rig.Clock.Elapsed.Should().BeGreaterThanOrEqualTo(
             TimeSpan.FromSeconds(6), "the clock really was moved past the patience");
         lock (heard)
