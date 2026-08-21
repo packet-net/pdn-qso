@@ -131,40 +131,59 @@ public sealed class VirtualClock : TimeProvider
 
     /// <summary>Moves the clock forward, running every callback that falls due on the way.</summary>
     /// <param name="by">How far to move it. Zero still fires anything already due.</param>
+    /// <remarks>
+    /// The clock stops at each due time on the way rather than jumping to the end and firing
+    /// what it passed, so a callback sees the time it was scheduled for and not the time the
+    /// advance happened to finish at. That is what a real clock does, and everything that
+    /// schedules its next step from "now" depends on it: without it a timer repeating every
+    /// second fires once in a five second advance, because its second tick is booked from the
+    /// end of the advance rather than from its first.
+    /// </remarks>
     public void Advance(TimeSpan by)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(by, TimeSpan.Zero);
 
+        DateTimeOffset target;
         lock (_gate)
         {
-            _now += by;
+            target = _now + by;
         }
 
-        // Callbacks run outside the lock, and one at a time in due order, so a callback that
-        // schedules another timer behaves as it would on the real clock.
+        // Callbacks run outside the lock, one at a time, in the order they come due, with the
+        // clock standing at each one's own due time as it runs.
         while (true)
         {
             VirtualTimer? next = null;
-            DateTimeOffset now;
+            DateTimeOffset due = default;
             lock (_gate)
             {
-                now = _now;
                 foreach (VirtualTimer timer in _timers)
                 {
-                    if (timer.Due is DateTimeOffset due && due <= now
-                        && (next is null || due < next.Due))
+                    if (timer.Due is DateTimeOffset at && at <= target && (next is null || at < due))
                     {
                         next = timer;
+                        due = at;
                     }
+                }
+
+                if (next is null)
+                {
+                    // Nothing else falls due on the way: finish the move and stop.
+                    if (_now < target)
+                    {
+                        _now = target;
+                    }
+
+                    return;
+                }
+
+                if (_now < due)
+                {
+                    _now = due;
                 }
             }
 
-            if (next is null)
-            {
-                return;
-            }
-
-            next.Fire(now);
+            next.Fire(due);
             lock (_gate)
             {
                 _fired++;
@@ -184,12 +203,30 @@ public sealed class VirtualClock : TimeProvider
     private sealed class VirtualTimer(VirtualClock clock, TimerCallback callback, object? state)
         : ITimer
     {
+        /// <summary>Not scheduled. A sentinel, so the due time is one atomic long.</summary>
+        private const long Never = long.MinValue;
+
         private readonly object _gate = new();
         private TimeSpan _period = Timeout.InfiniteTimeSpan;
+        private long _due = Never;
         private bool _disposed;
 
-        /// <summary>When this next fires, or null when it is stopped.</summary>
-        public DateTimeOffset? Due { get; private set; }
+        /// <summary>
+        /// When this next fires, or null when it is stopped.
+        /// </summary>
+        /// <remarks>
+        /// Held as ticks rather than as a <see cref="DateTimeOffset"/> so that the clock's scan,
+        /// which reads it without taking this timer's lock, cannot see half of one write and
+        /// half of the next. Sixteen bytes are not written atomically; eight are.
+        /// </remarks>
+        public DateTimeOffset? Due
+        {
+            get
+            {
+                long ticks = Volatile.Read(ref _due);
+                return ticks == Never ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
+            }
+        }
 
         public bool Change(TimeSpan dueTime, TimeSpan period)
         {
@@ -201,9 +238,12 @@ public sealed class VirtualClock : TimeProvider
                 }
 
                 _period = period;
-                Due = dueTime == Timeout.InfiniteTimeSpan
-                    ? null
-                    : clock.GetUtcNow() + (dueTime < TimeSpan.Zero ? TimeSpan.Zero : dueTime);
+                Volatile.Write(
+                    ref _due,
+                    dueTime == Timeout.InfiniteTimeSpan
+                        ? Never
+                        : (clock.GetUtcNow() + (dueTime < TimeSpan.Zero ? TimeSpan.Zero : dueTime))
+                            .UtcTicks);
                 return true;
             }
         }
@@ -218,9 +258,11 @@ public sealed class VirtualClock : TimeProvider
                     return;
                 }
 
-                Due = _period > TimeSpan.Zero && _period != Timeout.InfiniteTimeSpan
-                    ? now + _period
-                    : null;
+                Volatile.Write(
+                    ref _due,
+                    _period > TimeSpan.Zero && _period != Timeout.InfiniteTimeSpan
+                        ? (now + _period).UtcTicks
+                        : Never);
             }
 
             callback(state);
@@ -231,7 +273,7 @@ public sealed class VirtualClock : TimeProvider
             lock (_gate)
             {
                 _disposed = true;
-                Due = null;
+                Volatile.Write(ref _due, Never);
             }
 
             clock.Forget(this);

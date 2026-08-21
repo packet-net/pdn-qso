@@ -152,6 +152,16 @@ public static class VirtualTime
             }
 
             still = 0;
+
+            // A step is refused before it is taken, not regretted after: a budget that let one
+            // enormous jump through and then noticed would report the thing it was waiting for
+            // as having happened inside a budget that never covered it.
+            if (clock.NextDue is DateTimeOffset next
+                && spent + (next - clock.GetUtcNow()) > allowed)
+            {
+                return done();
+            }
+
             if (clock.TryAdvanceToNextDue() is not TimeSpan step)
             {
                 // Nothing scheduled, nothing busy, nothing moving. That is not the same as
