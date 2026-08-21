@@ -1,0 +1,46 @@
+pdn-qso - interactive two-way testing over the pdn-soundmodem modems
+https://github.com/packet-net/pdn-qso
+
+Copyright (c) 2026 Tom Fanning M0LTE and Packet.NET contributors
+
+This package ships a single self-contained executable that bundles the pdn-qso
+code, its .NET dependencies and the .NET runtime.
+
+LICENCE
+-------
+
+pdn-qso is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+
+On Debian systems the full text of the GNU Affero General Public License version
+3 can be found in /usr/share/common-licenses/AGPL-3.
+
+WHY AGPL
+--------
+
+pdn-qso links M0LTE.Flex (AGPL-3.0) for the FlexRadio device, so the combined
+work is AGPL-3.0-or-later.  It also links pdn-soundmodem (GPL-3.0-or-later),
+which GPLv3 section 13 expressly permits to be combined with AGPL-3.0 code.
+
+BUNDLED THIRD-PARTY COMPONENTS
+------------------------------
+
+The executable statically bundles the .NET runtime and libraries
+(Copyright (c) .NET Foundation and Contributors, MIT licence) together with
+Terminal.Gui (MIT), pdn-soundmodem (GPL-3.0-or-later) and the Packet.NET support
+packages it brings with it, and M0LTE.Flex (AGPL-3.0).  All are licence
+compatible with AGPL-3.0-or-later.  Their individual licence texts are
+distributed with their respective upstream sources.
+
+PROVENANCE
+----------
+
+The LT fountain code in PdnQso.Link is implemented from Luby's 2002 paper and
+MacKay's description of the robust soliton distribution, not ported from any
+implementation.  RaptorQ is deliberately not used.

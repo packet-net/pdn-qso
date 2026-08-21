@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>pdn-qso</AssemblyName>
+    <RootNamespace>PdnQso</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Terminal.Gui" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PdnQso.Link/PdnQso.Link.csproj" />
+  </ItemGroup>
+
+</Project>

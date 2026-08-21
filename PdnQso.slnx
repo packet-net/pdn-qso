@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PdnQso.Link/PdnQso.Link.csproj" />
+    <Project Path="src/PdnQso/PdnQso.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PdnQso.Tests/PdnQso.Tests.csproj" />
+  </Folder>
+</Solution>

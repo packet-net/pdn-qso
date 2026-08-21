@@ -1,0 +1,14 @@
+bin/
+obj/
+*.user
+.vs/
+.idea/
+TestResults/
+artifacts/
+*.nupkg
+*.snupkg
+.claude/
+
+# Python byte-code from running the helper scripts
+__pycache__/
+*.pyc
