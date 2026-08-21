@@ -216,6 +216,19 @@ public class QsoConfigTests : IDisposable
     }
 
     [Fact]
+    public void A_Baseband_Mode_Tunes_The_Dial_To_The_Frequency_Itself()
+    {
+        // fsk9600 occupies DC upwards, so there is no centre to offset the dial by and the
+        // radio is tuned to where the operator said.
+        DeviceOptions options = (Good() with { Mode = "fsk9600", AudioCentreHz = null })
+            .ToDeviceOptions();
+
+        options.AudioCentreHz.Should().Be(0);
+        DialFrequency.For(options.RfFrequencyHz!.Value, options.AudioCentreHz)
+            .Should().Be(14_105_000);
+    }
+
+    [Fact]
     public void The_Config_Turns_Into_The_Device_Options_It_Describes()
     {
         DeviceOptions options = Good().ToDeviceOptions();

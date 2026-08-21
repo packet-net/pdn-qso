@@ -373,7 +373,10 @@ public sealed record QsoConfig
             OutputGain = (float)OutputGain,
             UseMixerPower = UseMixerPower,
             RfFrequencyHz = RfFrequencyHz,
-            AudioCentreHz = ResolvedAudioCentreHz ?? 1500,
+            // Zero for a baseband mode (fsk*/c4fsk*), which occupies DC upwards and has no
+            // centre to speak of: for those the dial is the RF frequency itself, and offsetting
+            // it by a made-up 1500 Hz would put the whole signal in the wrong place.
+            AudioCentreHz = ResolvedAudioCentreHz ?? 0,
             LowerSideband = LowerSideband,
             FlexAntenna = FlexAntenna,
             FlexDaxChannel = FlexDaxChannel,
