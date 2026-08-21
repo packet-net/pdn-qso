@@ -29,6 +29,32 @@ public class DecimatingAudioInputTests
         }
     }
 
+    /// <summary>
+    /// A capture device that hands out a known ramp in whatever awkward block sizes it is told
+    /// to, which is what a device paced to wall clock does: it returns what it owes, and that
+    /// is a multiple of the decimation factor only by accident.
+    /// </summary>
+    private sealed class RaggedRamp(int sampleRate, IReadOnlyList<int> reads) : IAudioInput
+    {
+        private int _n;
+        private int _read;
+
+        public int SampleRate => sampleRate;
+
+        public int Read(Span<float> destination)
+        {
+            int want = Math.Min(destination.Length, reads[_read++ % reads.Count]);
+            for (int i = 0; i < want; i++)
+            {
+                // A ramp, so a dropped sample shows up as a step rather than hiding in a
+                // periodic signal that looks much the same one sample later.
+                destination[i] = _n++ / 100000f;
+            }
+
+            return want;
+        }
+    }
+
     private static float[] Drain(IAudioInput input, int samples)
     {
         var taken = new float[samples];
@@ -105,5 +131,30 @@ public class DecimatingAudioInputTests
 
         decimating.Factor.Should().Be(1);
         Peak(Drain(decimating, 4000), skip: 200).Should().BeApproximately(0.5, 0.03);
+    }
+
+    [Fact]
+    public void A_Part_Frame_Tail_Is_Carried_Into_The_Next_Read_Rather_Than_Dropped()
+    {
+        // The bug this pins cost an afternoon: a device paced to wall clock returns 4,801
+        // samples, the decimator takes 4,800 whole frames and threw the last one away, and the
+        // stream slipped by one sample per read for ever after. A tone still measures at its
+        // own level through that, so the tone tests above stayed green while nothing could
+        // decode: two copies of the program over a 48 kHz pipe pair heard silence.
+        const int deviceRate = 48000;
+        const int modeRate = 12000;
+        const int samples = 2048;
+
+        // The same stream twice: once in tidy whole frames, once in the ragged sizes a paced
+        // device really returns. The decimator's output has to be the same either way.
+        var tidy = new DecimatingAudioInput(
+            new RaggedRamp(deviceRate, [1024]), modeRate, blockSamples: 512);
+        var ragged = new DecimatingAudioInput(
+            new RaggedRamp(deviceRate, [1023, 37, 4801, 1, 2, 3, 511]), modeRate, blockSamples: 512);
+
+        float[] fromTidy = Drain(tidy, samples);
+        float[] fromRagged = Drain(ragged, samples);
+
+        fromRagged.Should().Equal(fromTidy);
     }
 }

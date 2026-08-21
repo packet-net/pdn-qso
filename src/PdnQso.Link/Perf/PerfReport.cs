@@ -84,15 +84,21 @@ public sealed record PerfReport(
 
     /// <summary>
     /// One CSV row matching <see cref="CsvHeader"/> exactly, field for field. Plain ASCII, comma
-    /// separated: nothing this record holds can itself contain a comma, so there is no quoting
-    /// to get wrong. A null number is an empty field, not the literal text "null".
+    /// separated, RFC 4180 quoting on the text fields. A null number is an empty field, not the
+    /// literal text "null".
     /// </summary>
+    /// <remarks>
+    /// The quoting is not decoration: a pipe device is spelled
+    /// <c>pipe:&lt;in&gt;,&lt;out&gt;,&lt;rate&gt;</c> and puts two commas in the device column
+    /// every time, which unquoted makes the row three fields wider than the header and every
+    /// column after it wrong.
+    /// </remarks>
     public string ToCsvRow() => string.Join(
         ',',
-        Procedure,
-        Mode,
+        Quoted(Procedure),
+        Quoted(Mode),
         Number(CentreHz),
-        Device,
+        Quoted(Device),
         PowerAtStart?.Unit.ToString() ?? "",
         PowerAtStart is { } power ? Number(power.Setting) : "",
         PowerAtStart is { Measured: { } measured } ? Number(measured) : "",
@@ -110,6 +116,25 @@ public sealed record PerfReport(
         Number(MeanRttMs),
         Number(WorstRttMs),
         Timestamp.ToString("O", CultureInfo.InvariantCulture));
+
+    /// <summary>
+    /// One CSV field, quoted if it has to be: a field holding a comma, a quote or a line break
+    /// goes in double quotes with its own quotes doubled, which is what every reader expects.
+    /// </summary>
+    private static string Quoted(string? field)
+    {
+        if (string.IsNullOrEmpty(field))
+        {
+            return "";
+        }
+
+        if (field.IndexOfAny([',', '"', '\r', '\n']) < 0)
+        {
+            return field;
+        }
+
+        return string.Concat("\"", field.Replace("\"", "\"\"", StringComparison.Ordinal), "\"");
+    }
 
     /// <summary>
     /// A short plain-text summary that stands on its own: everything a person reading it later,

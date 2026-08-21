@@ -72,6 +72,8 @@ internal sealed class HalfDuplexChannel : IDisposable
 
         public IPowerControl Power => inner.Power;
 
+        public IModem Modem => inner.Modem;
+
         public event Action<LinkFrame, FrameQuality>? FrameReceived
         {
             add => inner.FrameReceived += value;
@@ -82,6 +84,12 @@ internal sealed class HalfDuplexChannel : IDisposable
         {
             add => inner.RawFrameReceived += value;
             remove => inner.RawFrameReceived -= value;
+        }
+
+        public event Action<LinkFrame?, byte[]>? FrameTransmitted
+        {
+            add => inner.FrameTransmitted += value;
+            remove => inner.FrameTransmitted -= value;
         }
 
         public void Start() => inner.Start();

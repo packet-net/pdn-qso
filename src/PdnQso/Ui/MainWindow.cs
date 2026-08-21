@@ -106,8 +106,12 @@ public sealed class MainWindow : Window
     }
 
     /// <summary>One frame the pane is holding, so a change of view can re-render it.</summary>
+    /// <param name="At">When it was heard or sent.</param>
+    /// <param name="Frame">The AX.25 frame.</param>
+    /// <param name="Quality">What the decode established; nothing much, for one we sent.</param>
+    /// <param name="Outgoing">True for one this station transmitted.</param>
     private readonly record struct HeardFrame(
-        DateTimeOffset At, byte[] Frame, FrameQuality Quality);
+        DateTimeOffset At, byte[] Frame, FrameQuality Quality, bool Outgoing);
 
     private void BuildLayout()
     {
@@ -116,6 +120,10 @@ public sealed class MainWindow : Window
         _status.Width = Dim.Fill();
         _status.Height = 1;
 
+        // The panes take focus so their contents can: in Terminal.Gui a view whose container
+        // cannot be focused is unreachable from the keyboard, however focusable it is itself.
+        _monitorPane.CanFocus = true;
+        _activityPane.CanFocus = true;
         _monitorPane.Title = "Monitor";
         _monitorPane.X = 0;
         _monitorPane.Y = 1;
@@ -174,6 +182,7 @@ public sealed class MainWindow : Window
             _activityPane.Visible = false;
             _monitorPane.Height = Dim.Fill(LogPaneHeight + 1);
             SetNeedsLayout();
+            _ = _monitorList.SetFocus();
             return;
         }
 
@@ -194,6 +203,10 @@ public sealed class MainWindow : Window
         _activityPane.Y = Pos.Bottom(_monitorPane);
         _activityPane.Height = Dim.Fill(LogPaneHeight + 1);
         SetNeedsLayout();
+
+        // After the pane is visible, because a hidden view cannot take focus. Without this an
+        // operator presses F1, types their first line, and nothing at all happens.
+        activity.Shown();
     }
 
     /// <summary>Adds a line to the log pane.</summary>
@@ -218,11 +231,13 @@ public sealed class MainWindow : Window
         {
             _station.RawFrameReceived -= OnRawFrame;
             _station.FrameReceived -= OnLinkFrame;
+            _station.FrameTransmitted -= OnTransmittedFrame;
         }
 
         _station = station;
         station.RawFrameReceived += OnRawFrame;
         station.FrameReceived += OnLinkFrame;
+        station.FrameTransmitted += OnTransmittedFrame;
         _correspondent = null;
         _lastSnrDb = null;
         _activity?.Attach(station);
@@ -233,20 +248,44 @@ public sealed class MainWindow : Window
     {
         // The capture thread. Everything here is a copy into a queue; the drawing happens on
         // the UI thread, where Terminal.Gui requires it.
-        var heard = new HeardFrame(DateTimeOffset.Now, frame, quality);
+        var heard = new HeardFrame(DateTimeOffset.Now, frame, quality, Outgoing: false);
         _app.Invoke(() =>
         {
-            _heard.Add(heard);
-            if (_heard.Count > MonitorHistory)
-            {
-                _heard.RemoveAt(0);
-                _monitorLines.RemoveAt(0);
-            }
-
+            Show(heard);
             _lastSnrDb = quality.SnrDb ?? _lastSnrDb;
-            _monitorLines.Add(Render(heard));
-            ScrollToEnd(_monitorList, _monitorLines.Count);
         });
+    }
+
+    /// <summary>
+    /// A frame this station sent. The pane's other half: without it an operator sees everybody
+    /// on the channel except themselves, which on a link where nothing is coming back is the
+    /// one thing they need to be sure of.
+    /// </summary>
+    private void OnTransmittedFrame(LinkFrame? link, byte[] frame)
+    {
+        // The transmit thread. There is no decode to report on a frame we made ourselves, so
+        // the quality carries only what is true of it: which mode it went out on, and how long
+        // it was.
+        var sent = new HeardFrame(
+            DateTimeOffset.Now,
+            frame,
+            new FrameQuality(_station?.Mode ?? "", frame.Length, null, null),
+            Outgoing: true);
+        _app.Invoke(() => Show(sent));
+    }
+
+    /// <summary>Puts one frame in the pane, dropping the oldest when it is full.</summary>
+    private void Show(HeardFrame frame)
+    {
+        _heard.Add(frame);
+        if (_heard.Count > MonitorHistory)
+        {
+            _heard.RemoveAt(0);
+            _monitorLines.RemoveAt(0);
+        }
+
+        _monitorLines.Add(Render(frame));
+        ScrollToEnd(_monitorList, _monitorLines.Count);
     }
 
     private void OnLinkFrame(LinkFrame frame, FrameQuality quality)
@@ -263,7 +302,9 @@ public sealed class MainWindow : Window
     }
 
     private string Render(HeardFrame heard) =>
-        MonitorLine.Format(heard.At, heard.Frame, heard.Quality, _payloadView);
+        MonitorLine.Format(
+            heard.At, heard.Frame, heard.Quality, _payloadView,
+            MonitorLine.DefaultPayloadWidth, heard.Outgoing);
 
     private void RerenderMonitor()
     {
@@ -435,6 +476,7 @@ public sealed class MainWindow : Window
             {
                 _station.RawFrameReceived -= OnRawFrame;
                 _station.FrameReceived -= OnLinkFrame;
+                _station.FrameTransmitted -= OnTransmittedFrame;
                 _station = null;
             }
         }

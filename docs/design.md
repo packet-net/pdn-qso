@@ -88,10 +88,31 @@ it held from the previous one rather than keep talking to a station that has gon
 station's frame events arrive on the capture thread, so anything touching a view goes through
 `IApplication.Invoke` first.
 
-The Monitor pane shows every frame **heard**. A station's own transmissions are in the frame log
-(the station records them) but not in the pane, because `IStation` raises no transmitted-frame
-event; the line formatter already takes an `outgoing` flag for when it does.
+The Monitor pane shows every frame **heard and sent**. `IStation.FrameTransmitted` raises the
+decoded link frame and the raw bytes after the transmitter has dropped, and the pane renders it
+with the line formatter's `outgoing` flag, so an operator on a link where nothing is coming back
+can still see their own traffic go out. (This was the A2 limitation; it is lifted.)
+
+An activity is also told when it comes on screen, which is not the same occasion as `Attach`:
+
+```csharp
+void Shown();     // put the cursor where the operator is about to type
+```
+
+`Attach` is about the station and fires on a restart; `Shown` is about the screen and fires on
+every F-key. It has to be separate because a view that is not visible cannot take focus, so an
+activity that focuses its own input as it is built focuses nothing. The same applies one level
+up: in Terminal.Gui a view whose container cannot be focused is unreachable from the keyboard
+however focusable it is itself, so the panes and each activity's root view set `CanFocus`.
 
 ## 7. Phases and agents
 
 A (skeleton + Monitor + devices + settings) first; then B (chat ARQ), C (fountain + file), D (perf) in parallel; E (packaging, README, hand-off). Each phase is a PR with its own tests; the skeleton phase also brings `ci.yml` and `release.yml` (copied in shape from pdn-soundmodem, self-hosted runner labels, release notes from PR titles via `scripts/release-notes.py`).
+
+**What shipped.** All of it, on 2026-08-21, in that order, with a wiring pass between D and E that replaced the placeholder activities with the real ones. Three things the hand-run of two copies over a `pipe:` pair found, which no hermetic test had:
+
+- **Focus.** Switching activity left the input unfocused, so an operator pressed F1, typed their first line and nothing happened at all. The `Shown` seam above, and `CanFocus` on the containers.
+- **The rate bridge.** `DecimatingAudioInput` dropped the part-frame tail of every read instead of carrying it into the next one, so a device paced to wall clock (which returns a multiple of the decimation factor only by accident) slipped one to three samples per read and nothing decoded. That is the path every sound card at 48 kHz uses, and the 1:1 pipe test never went near it. Fixed, with a test that pins the ragged-read case against the tidy one.
+- **The CSV.** A pipe device is spelled `pipe:<in>,<out>,<rate>` and put two unquoted commas in the device column, making every row three fields wider than its header. RFC 4180 quoting on the text fields.
+
+Left open, deliberately: a receiver's Done that collides with the sender's own transmission is not heard, so a clean transfer can cost one status interval more than it should. The recovery works (the sender re-offers, the receiver Dones again), so this is a tuning question with a measurement behind it rather than a hand-off fix.

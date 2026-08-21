@@ -3,7 +3,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Packet.SoundModem.Modems;
 using PdnQso.Link;
+using PdnQso.Link.Chat;
 using PdnQso.Link.Devices;
+using PdnQso.Link.Fountain;
+using PdnQso.Link.Transfer;
 
 namespace PdnQso.Config;
 
@@ -90,11 +93,23 @@ public sealed record QsoConfig
     /// <summary>Ident sending speed, words per minute.</summary>
     public double IdentWpm { get; init; } = 20;
 
-    /// <summary>How long the chat ARQ waits for an ack before retrying, in milliseconds.</summary>
-    public int AckTimeoutMs { get; init; } = 6000;
+    /// <summary>
+    /// The chat ARQ's ack timeout margin, in milliseconds: how long it waits <i>on top of</i>
+    /// the time the mode itself takes to put the line and the answer on air. A fixed timeout
+    /// cannot serve both a 9600 baud packet mode and a 300 baud one, so the mode's own frame
+    /// time does the work and this is the margin for the far station's turnaround.
+    /// </summary>
+    public int AckTimeoutMs { get; init; } = 3000;
 
     /// <summary>How many times the chat ARQ retries one line before giving up.</summary>
     public int MaxRetries { get; init; } = 5;
+
+    /// <summary>
+    /// Let the chat ARQ step the MS110D waveform down when retries pile up, and back up when
+    /// the link recovers. Off pins the waveform where the operator put it, which is what a
+    /// measurement run wants; on is what a QSO wants. No effect on a mode with no ladder.
+    /// </summary>
+    public bool StepWaveform { get; init; } = true;
 
     /// <summary>The robust soliton distribution's c, for the fountain coder.</summary>
     public double FountainC { get; init; } = 0.03;
@@ -107,6 +122,18 @@ public sealed record QsoConfig
     /// <c>~/.local/share/pdn-qso</c>, empty for no log at all.
     /// </summary>
     public string? FrameLogPath { get; init; }
+
+    /// <summary>
+    /// Where received files are written; null for <c>~/pdn-qso-received</c>. The directory is
+    /// created when the first file arrives.
+    /// </summary>
+    public string? DownloadDirectory { get; init; }
+
+    /// <summary>
+    /// Where Perf's Export appends its CSV row; null for <c>~/pdn-qso-perf.csv</c>. The header
+    /// line is written when the file is new, so the file is readable on its own.
+    /// </summary>
+    public string? PerfCsvPath { get; init; }
 
     /// <summary>The DAX channel to claim on a Flex. SmartSDR takes 1.</summary>
     public string FlexDaxChannel { get; init; } = "1";
@@ -123,6 +150,14 @@ public sealed record QsoConfig
     /// <summary>Drive the sound card's playback mixer as the transmit power control.</summary>
     public bool UseMixerPower { get; init; } = true;
 
+    /// <summary>
+    /// This user's home directory. <c>DoNotVerify</c> throughout, like every other path here:
+    /// asking where a file should go must not depend on it already existing.
+    /// </summary>
+    private static string Home =>
+        Environment.GetFolderPath(
+            Environment.SpecialFolder.UserProfile, Environment.SpecialFolderOption.DoNotVerify);
+
     /// <summary>The file this is read from and written to, unless <c>--config</c> says otherwise.</summary>
     public static string DefaultPath =>
         Path.Combine(
@@ -131,6 +166,14 @@ public sealed record QsoConfig
                 Environment.SpecialFolderOption.DoNotVerify),
             "pdn-qso",
             "config.json");
+
+    /// <summary>Where received files go when <see cref="DownloadDirectory"/> does not say.</summary>
+    public static string DefaultDownloadDirectory =>
+        Path.Combine(Home, "pdn-qso-received");
+
+    /// <summary>Where Perf's CSV goes when <see cref="PerfCsvPath"/> does not say.</summary>
+    public static string DefaultPerfCsvPath =>
+        Path.Combine(Home, "pdn-qso-perf.csv");
 
     /// <summary>Where the frame log goes when <see cref="FrameLogPath"/> does not say.</summary>
     public static string DefaultFrameLogPath =>
@@ -149,6 +192,16 @@ public sealed record QsoConfig
         "" => null,
         string path => path,
     };
+
+    /// <summary>The directory received files are written to.</summary>
+    [JsonIgnore]
+    public string ResolvedDownloadDirectory =>
+        string.IsNullOrWhiteSpace(DownloadDirectory) ? DefaultDownloadDirectory : DownloadDirectory;
+
+    /// <summary>The file Perf's Export appends to.</summary>
+    [JsonIgnore]
+    public string ResolvedPerfCsvPath =>
+        string.IsNullOrWhiteSpace(PerfCsvPath) ? DefaultPerfCsvPath : PerfCsvPath;
 
     /// <summary>Who this station identifies as.</summary>
     [JsonIgnore]
@@ -347,6 +400,20 @@ public sealed record QsoConfig
             problems.Add("Retries: it cannot be negative.");
         }
 
+        if (DownloadDirectory is not null && DownloadDirectory.Trim().Length > 0
+            && !Path.IsPathRooted(DownloadDirectory.Trim()))
+        {
+            problems.Add(
+                "Download directory: give a full path. A relative one lands wherever the "
+                + "program happened to be started from.");
+        }
+
+        if (PerfCsvPath is not null && PerfCsvPath.Trim().Length > 0
+            && !Path.IsPathRooted(PerfCsvPath.Trim()))
+        {
+            problems.Add("Perf CSV: give a full path.");
+        }
+
         if (FountainC <= 0 || FountainDelta is <= 0 or >= 1)
         {
             problems.Add("Fountain: c is above zero and delta is between zero and one.");
@@ -388,6 +455,25 @@ public sealed record QsoConfig
 
     /// <summary>The modem options this config asks for.</summary>
     public ModemOptions ToModemOptions() => new(CentreFrequencyHz: ResolvedAudioCentreHz);
+
+    /// <summary>The chat ARQ options this config asks for.</summary>
+    /// <remarks>
+    /// Only the three knobs design.md puts in front of an operator are set here; the rest of
+    /// <see cref="ChatOptions"/> keeps the library's own defaults, which are the ones the
+    /// hermetic tests pin.
+    /// </remarks>
+    public ChatOptions ToChatOptions() => new()
+    {
+        AckTimeoutBase = TimeSpan.FromMilliseconds(Math.Max(1, AckTimeoutMs)),
+        MaxRetries = MaxRetries,
+        StepWaveform = StepWaveform,
+    };
+
+    /// <summary>The file transfer options this config asks for.</summary>
+    public FileTransferOptions ToFileTransferOptions() => new()
+    {
+        Fountain = LtParameters.Default with { C = FountainC, Delta = FountainDelta },
+    };
 
     /// <summary>The station options this config asks for.</summary>
     public StationOptions ToStationOptions() => new()

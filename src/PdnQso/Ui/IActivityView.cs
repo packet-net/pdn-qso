@@ -41,4 +41,17 @@ public interface IActivityView
     /// </summary>
     /// <param name="station">The live station. It has already been started.</param>
     void Attach(IStation station);
+
+    /// <summary>
+    /// Puts the cursor where the operator is about to type, now that this activity is the one
+    /// on screen.
+    /// </summary>
+    /// <remarks>
+    /// Called every time the window brings the activity into the pane, which is not the same
+    /// occasion as <see cref="Attach"/>: an F-key switches what is on screen without changing
+    /// the station. It has to be a separate call because a view that is not visible cannot take
+    /// focus, so an activity focusing its own input when it is built focuses nothing - the pane
+    /// it is in is still hidden at that point.
+    /// </remarks>
+    void Shown();
 }

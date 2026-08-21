@@ -204,25 +204,37 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var rig = Rig.Build(AudioChannel.Clean);
 
+        // Two blocks and a patience of fifteen status intervals, so that "more than the
+        // systematic pass" is two symbols inside 1.5 s. The first cut asked for more than four
+        // symbols inside 500 ms, which is the systematic pass of a four-block file plus one
+        // listen gap: on an idle box it sent six and passed, and under the load of the rest of
+        // the suite it sent exactly the four of the pass and failed. A frame costs about 50 ms
+        // through this rig, so the claim is now clear of the noise by an order of magnitude
+        // rather than by two frames.
         FileTransferOptions options = Fast() with
         {
             StatusInterval = TimeSpan.FromMilliseconds(100),
             ListenInterval = TimeSpan.FromMilliseconds(100),
             OfferInterval = TimeSpan.FromMilliseconds(200),
-            PatienceIntervals = 5,
+            PatienceIntervals = 15,
         };
         var sender = new FileSender(rig.A, options, idSeed: 11);
         string? failure = null;
         sender.Failed += reason => failure = reason;
 
         FileTransferResult sent = await sender.SendAsync(
-            "into-the-void.bin", Content(256, seed: 5), cancel.Token);
+            "into-the-void.bin", Content(BlockSize * 2, seed: 5), cancel.Token);
 
         sent.Success.Should().BeFalse();
         sent.FailureReason.Should().Contain("no answer from the receiver");
         failure.Should().Be(sent.FailureReason);
         sent.Elapsed.Should().BeGreaterThan(options.Patience);
-        sent.Symbols.Should().BeGreaterThan(4, "it kept pouring while it waited");
+        sent.BlockCount.Should().Be(2);
+        output.WriteLine($"the sender poured {sent.Symbols} symbols into the void");
+        sent.Symbols.Should().BeGreaterThan(
+            sent.BlockCount,
+            "it kept pouring repair symbols while it waited, rather than stopping at the "
+            + "end of the systematic pass");
     }
 
     [Fact]

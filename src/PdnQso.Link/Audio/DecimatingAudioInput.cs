@@ -29,6 +29,8 @@ public sealed class DecimatingAudioInput : IAudioInput, IDisposable
     private readonly int _factor;
     private readonly float[] _raw;
     private readonly float[] _decimated;
+    private readonly float[] _carry;
+    private int _carried;
     private int _ready;
     private int _taken;
 
@@ -63,6 +65,9 @@ public sealed class DecimatingAudioInput : IAudioInput, IDisposable
         _decimator = _factor == 1 ? null : new Decimator(inner.SampleRate, _factor, taps);
         _raw = new float[blockSamples * _factor];
         _decimated = new float[_decimator?.MaxOutput(_raw.Length) ?? _raw.Length];
+
+        // Room for the part-frame tail of one read, to go in front of the next one.
+        _carry = new float[Math.Max(1, _factor - 1)];
     }
 
     /// <inheritdoc />
@@ -84,18 +89,41 @@ public sealed class DecimatingAudioInput : IAudioInput, IDisposable
             _taken = 0;
             _ready = 0;
 
-            int wanted = Math.Min(_raw.Length, destination.Length * _factor);
-            int got = _inner.Read(_raw.AsSpan(0, wanted));
-            if (got <= 0)
+            // Last read's part-frame tail goes in front of this read, so the stream the
+            // decimator sees is the stream the device produced, unbroken.
+            _carry.AsSpan(0, _carried).CopyTo(_raw);
+
+            // At least one whole frame before returning, or a device that owes a sample or two
+            // would produce no output at all and a caller reading 0 as "nothing there" would
+            // stall on a live input. The carry makes this terminate: every read moves the count
+            // forward and the shortfall is never more than the factor.
+            int target = Math.Min(
+                _raw.Length, Math.Max(_factor, destination.Length * _factor));
+            int got = _carried;
+            while (got < _factor)
             {
-                return 0;
+                int read = _inner.Read(_raw.AsSpan(got, target - got));
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                got += read;
             }
 
             // Whole input frames only: handing the decimator a part-frame tail would put the
             // polyphase commutator out of step with the next block and every sample after it.
-            got -= got % _factor;
+            // The tail is kept rather than dropped: a device paced to wall clock returns
+            // whatever it owes, which is a multiple of the factor only by accident, and
+            // dropping one to three samples per read is a stream that slips continuously.
+            // Nothing decodes through that.
+            _carried = got % _factor;
+            got -= _carried;
+            _raw.AsSpan(got, _carried).CopyTo(_carry);
             if (got == 0)
             {
+                // The inner device has nothing at all. What little it did give is in the carry
+                // and goes in front of the next read.
                 return 0;
             }
 

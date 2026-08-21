@@ -110,6 +110,9 @@ public static class SettingsDialog
         private readonly TextField _identWpm;
         private readonly TextField _ackTimeout;
         private readonly TextField _maxRetries;
+        private readonly CheckBox _stepWaveform;
+        private readonly TextField _downloadDirectory;
+        private readonly TextField _perfCsv;
         private readonly TextField _fountainC;
         private readonly TextField _fountainDelta;
         private readonly TextField _frameLog;
@@ -143,11 +146,15 @@ public static class SettingsDialog
             _identCallsign = Add(parent, SecondColumn, ref right, "Ident callsign", config.IdentCallsign ?? "");
             _identInterval = Add(parent, SecondColumn, ref right, "Ident every min", Text(config.IdentIntervalMinutes));
             _identWpm = Add(parent, SecondColumn, ref right, "Ident wpm", Text(config.IdentWpm));
-            _ackTimeout = Add(parent, SecondColumn, ref right, "Ack timeout ms", Text(config.AckTimeoutMs));
+            _ackTimeout = Add(parent, SecondColumn, ref right, "Ack margin ms", Text(config.AckTimeoutMs));
             _maxRetries = Add(parent, SecondColumn, ref right, "Max retries", Text(config.MaxRetries));
+            _stepWaveform = Check(parent, SecondColumn, ref right, "Step waveform", config.StepWaveform);
             _fountainC = Add(parent, SecondColumn, ref right, "Fountain c", Text(config.FountainC));
             _fountainDelta = Add(parent, SecondColumn, ref right, "Fountain delta", Text(config.FountainDelta));
             _frameLog = Add(parent, SecondColumn, ref right, "Frame log path", config.FrameLogPath ?? "");
+            _downloadDirectory = Add(
+                parent, SecondColumn, ref right, "Downloads to", config.DownloadDirectory ?? "");
+            _perfCsv = Add(parent, SecondColumn, ref right, "Perf CSV path", config.PerfCsvPath ?? "");
             _flexDax = Add(parent, SecondColumn, ref right, "Flex DAX channel", config.FlexDaxChannel);
             _flexAntenna = Add(parent, SecondColumn, ref right, "Flex antenna", config.FlexAntenna);
             _uberSdrMode = Add(parent, SecondColumn, ref right, "UberSDR mode", config.UberSdrMode);
@@ -198,6 +205,9 @@ public static class SettingsDialog
                 IdentWpm = Double(_identWpm, "Ident wpm", current.IdentWpm, badNumbers),
                 AckTimeoutMs = Integer(_ackTimeout, "Ack timeout", current.AckTimeoutMs, badNumbers),
                 MaxRetries = Integer(_maxRetries, "Max retries", current.MaxRetries, badNumbers),
+                StepWaveform = _stepWaveform.Value == CheckState.Checked,
+                DownloadDirectory = Empty(_downloadDirectory),
+                PerfCsvPath = Empty(_perfCsv),
                 FountainC = Double(_fountainC, "Fountain c", current.FountainC, badNumbers),
                 FountainDelta = Double(_fountainDelta, "Fountain delta", current.FountainDelta, badNumbers),
                 FrameLogPath = _frameLog.Text.Trim().Length == 0 ? null : _frameLog.Text.Trim(),
