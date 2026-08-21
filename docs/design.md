@@ -157,6 +157,24 @@ CI runner in one day; the fix is structural rather than a larger number.
   `ChatSession.Sending` (an answer owed, counted where the frame is posted),
   `FileReceiver.Busy`. A flag raised late leaves a gap, and the gap is where a timeout fires
   against an answer that was already on its way.
+- **A test that moves the clock itself is bound by the same rule as the loop that does**, and
+  by one more: it may not assume its own handler got there first. A handler subscribed after a
+  session's runs second on the same frame, which puts it after the acknowledgement has been
+  stamped and not ahead of everything else, because that stamp is what released the task
+  waiting for the answer; the line can be delivered, returned and asserted on while the handler
+  is still queued. Wait for the fact that the jump happened. And the jump must not land inside
+  the sending end's own measurement of the burst it has just put out: that station released the
+  channel before the far end answered, and its pump stamps the burst's air time and its finish
+  afterwards, so time moved across that window is charged to the burst and comes back as a
+  round trip the size of the jump. `ChatSession.Sending` goes down only once the pump has
+  stamped what it measured, which makes it the fact to wait for. Both of these had
+  `An_Acknowledgement_Already_In_Hand_Beats_Its_Own_Patience` red on loaded full-suite runs, in
+  three shapes: a clock that had not moved at all, one that had moved by the patience rather
+  than by the jump (the settle loop's own step, taken while the handler was still queued), and
+  a round trip the size of the jump. Every one of them is the test's and not the library's:
+  driven with the gap injected rather than waited for, the session's own figures read
+  `air=6s trip=0`, so the round trip was stamped where the answer arrived, exactly as it says
+  it is, and the six seconds came in through the air time.
 - **A rig may charge for air time** by subscribing `AudioLink.Carried` to its clock, which moves
   it by each burst's own sample count over the link's rate. The file transfer tests do, because
   a sender that transmits for free can pour symbols for ever without a patience measured in
