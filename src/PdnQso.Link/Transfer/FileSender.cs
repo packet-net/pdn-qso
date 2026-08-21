@@ -269,9 +269,14 @@ public sealed class FileSender
     /// </summary>
     private async Task ListenAsync(CancellationToken cancellationToken)
     {
+        // Same reason as PerfRun's frame wait: the listening gap's timer is cancelled when the
+        // receiver says it is done, rather than left running with nothing waiting on it. On a
+        // clock a test drives, a timer nobody wants still moves time along.
+        using var over = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task done = _done.Task;
-        Task waited = Task.Delay(_options.ListenInterval, _time, cancellationToken);
+        Task waited = Task.Delay(_options.ListenInterval, _time, over.Token);
         await Task.WhenAny(done, waited).ConfigureAwait(false);
+        await over.CancelAsync().ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
     }
 

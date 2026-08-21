@@ -3,6 +3,7 @@ using Packet.SoundModem.Modems;
 using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Devices;
+using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests;
 
@@ -100,7 +101,7 @@ public class StationTests
     {
         using AudioLink link = AudioLink.Create(Mode);
         var busy = new ManualBusyGate { Held = true };
-        var time = new FakeTimeProvider(new DateTimeOffset(2026, 8, 21, 20, 0, 0, TimeSpan.Zero));
+        var time = new VirtualClock();
         await using var a = new Station(
             Options("M0LTE"), link.DeviceA, link.ModemA, busy, frameLog: null, timeProvider: time);
         await using var b = new Station(Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance);
@@ -112,9 +113,15 @@ public class StationTests
 
         Task send = a.SendAsync(a.Frame(LinkFrameType.Hello, 1));
 
-        // Hold the channel through a dozen poll intervals. The clock is fake, so this is a
-        // dozen polls and not a dozen milliseconds of hoping.
-        await PumpAsync(time, send, steps: 12);
+        // A dozen poll intervals of the station's own time, moved deliberately: a dozen polls
+        // and not a dozen milliseconds of hoping.
+        await VirtualTime.WaitForAsync(() => busy.Queries > 0);
+        for (int poll = 0; poll < 12; poll++)
+        {
+            int before = busy.Queries;
+            time.Advance(Options("M0LTE").BusyPollInterval);
+            await VirtualTime.WaitForAsync(() => busy.Queries > before);
+        }
 
         send.IsCompleted.Should().BeFalse("the channel is still busy");
         busy.Queries.Should().BeGreaterThan(2, "the station is polling, not sleeping");
@@ -122,9 +129,7 @@ public class StationTests
         a.Transmitting.Should().BeFalse();
 
         busy.Held = false;
-        await PumpAsync(time, send, steps: 200);
-
-        await send.WaitAsync(TimeSpan.FromSeconds(30));
+        await VirtualTime.RunAsync(time, send, () => link.Carrying, progress: () => link.Crossings);
         heard.Should().ContainSingle();
     }
 
@@ -133,18 +138,19 @@ public class StationTests
     {
         using AudioLink link = AudioLink.Create(Mode);
         var busy = new ManualBusyGate { Held = true };
-        var time = new FakeTimeProvider(new DateTimeOffset(2026, 8, 21, 20, 0, 0, TimeSpan.Zero));
+        var time = new VirtualClock();
         StationOptions options = Options("M0LTE") with { BusyWaitTimeout = TimeSpan.FromSeconds(2) };
         await using var a = new Station(
             options, link.DeviceA, link.ModemA, busy, frameLog: null, timeProvider: time);
         a.Start();
 
         Task send = a.SendAsync(a.Frame(LinkFrameType.Hello, 1));
-        await PumpAsync(time, send, steps: 200);
 
-        // The message is asserted, not just the type: the test's own patience would throw a
-        // TimeoutException too, and "the station gave up honestly" is the claim.
-        Func<Task> wait = async () => await send.WaitAsync(TimeSpan.FromSeconds(30));
+        // The clock runs on until the station gives up. Nothing here waits in real life, so the
+        // TimeoutException this asserts can only be the station's own: the test has no patience
+        // of its own to run out.
+        Func<Task> wait = async () =>
+            await VirtualTime.RunAsync(time, send, () => link.Carrying, progress: () => link.Crossings);
         await wait.Should().ThrowAsync<TimeoutException>().WithMessage("*still busy*");
     }
 
@@ -155,12 +161,14 @@ public class StationTests
         var busy = new ManualBusyGate { Held = false };
         // A fake clock nobody advances: if the station waited even one poll interval this
         // would never finish, which is a sharper assertion than timing it.
-        var time = new FakeTimeProvider(new DateTimeOffset(2026, 8, 21, 20, 0, 0, TimeSpan.Zero));
+        var time = new VirtualClock();
         await using var a = new Station(
             Options("M0LTE"), link.DeviceA, link.ModemA, busy, frameLog: null, timeProvider: time);
         a.Start();
 
-        await a.SendAsync(a.Frame(LinkFrameType.Hello, 1)).WaitAsync(TimeSpan.FromSeconds(30));
+        await VirtualTime.RunAsync(
+            time, a.SendAsync(a.Frame(LinkFrameType.Hello, 1)),
+            () => link.Carrying, progress: () => link.Crossings);
     }
 
     [Fact]
@@ -300,21 +308,6 @@ public class StationTests
         await Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Winds the fake clock on one poll interval at a time until <paramref name="task"/>
-    /// finishes or the steps run out, giving the station's continuation a real moment to run
-    /// in between. A fake clock only fires a timer that is already registered, and the station
-    /// registers its next one from a thread-pool continuation, so a single big Advance would
-    /// race with it.
-    /// </summary>
-    private static async Task PumpAsync(FakeTimeProvider time, Task task, int steps)
-    {
-        for (int i = 0; i < steps && !task.IsCompleted; i++)
-        {
-            time.Advance(TimeSpan.FromMilliseconds(20));
-            await Task.Delay(2);
-        }
-    }
 
     /// <summary>An UberSDR stands in as a device that hears and cannot answer.</summary>
     private sealed class ReceiveOnlyDevice(int sampleRate) : IAudioDevice

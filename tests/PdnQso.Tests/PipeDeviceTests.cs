@@ -2,6 +2,7 @@ using Packet.SoundModem.Modems;
 using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Devices;
+using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests;
 
@@ -49,7 +50,10 @@ public class PipeDeviceTests
 
             await a.SendAsync(a.Frame(LinkFrameType.Hello, 0x5A, "hello over a pipe"u8));
 
-            LinkFrame received = await heard.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // Waited for, not timed: the FIFOs and the pacing under this are real, and how
+            // long the machine takes over them is not a claim this test is making.
+            await VirtualTime.WaitForAsync(() => heard.Task.IsCompleted);
+            LinkFrame received = await heard.Task;
 
             received.Source.Should().Be("M0LTE-7");
             received.Type.Should().Be(LinkFrameType.Hello);
@@ -128,7 +132,10 @@ public class PipeDeviceTests
 
             await a.SendAsync(a.Frame(LinkFrameType.Hello, 0x5A, "hello at four times the rate"u8));
 
-            LinkFrame received = await heard.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // Waited for, not timed: the FIFOs and the pacing under this are real, and how
+            // long the machine takes over them is not a claim this test is making.
+            await VirtualTime.WaitForAsync(() => heard.Task.IsCompleted);
+            LinkFrame received = await heard.Task;
 
             received.Source.Should().Be("M0LTE-7");
             System.Text.Encoding.UTF8.GetString(received.Payload.Span)

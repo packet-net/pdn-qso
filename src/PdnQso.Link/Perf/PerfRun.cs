@@ -34,6 +34,19 @@ namespace PdnQso.Link.Perf;
 public sealed class PerfRun(TimeProvider? timeProvider = null)
 {
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+    private volatile bool _listening;
+
+    /// <summary>
+    /// True once a receiving run has subscribed and would hear a frame arriving now.
+    /// </summary>
+    /// <remarks>
+    /// A receiving run is started as a background task and does not become deaf-to-live in one
+    /// step: between the call and its subscription there is a moment in which a frame is simply
+    /// missed. On the air that is nothing, because the far end is not started by the same
+    /// keystroke. In a test where both ends are, it is the first frame of the run, and the
+    /// answer is to wait for this rather than to assume.
+    /// </remarks>
+    public bool Listening => _listening;
 
     /// <summary>A running report fired after each frame sent or answered, for a UI to show a
     /// measurement filling in as it happens rather than only at the end.</summary>
@@ -107,13 +120,14 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         int attempts = Math.Max(1, options.SummaryRetries);
         for (int attempt = 0; attempt < attempts && summary is null; attempt++)
         {
-            Task<(LinkFrame Frame, FrameQuality Quality)?> wait = WaitForFrameAsync(
+            using var wait = new FrameWait(
                 station,
-                (frame, _) => frame.Type == LinkFrameType.PerfPong && frame.Session == session,
-                options.SummaryTimeout, _time, cancellationToken);
+                (frame, _) => frame.Type == LinkFrameType.PerfPong && frame.Session == session);
             await station.SendAsync(
                 station.Frame(LinkFrameType.PerfPing, session), cancellationToken).ConfigureAwait(false);
-            (LinkFrame Frame, FrameQuality Quality)? answer = await wait.ConfigureAwait(false);
+            (LinkFrame Frame, FrameQuality Quality)? answer =
+                await wait.AnswerAsync(options.SummaryTimeout, _time, cancellationToken)
+                    .ConfigureAwait(false);
             if (answer is { } received && PerfWire.TryDecodeSummary(received.Frame.Payload.Span, out PerfWire.Summary decoded))
             {
                 summary = decoded;
@@ -234,6 +248,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         }
 
         station.FrameReceived += OnFrame;
+        _listening = true;
         try
         {
             byte wrapSession = await wrapUp.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -268,6 +283,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         }
         finally
         {
+            _listening = false;
             station.FrameReceived -= OnFrame;
         }
     }
@@ -303,14 +319,18 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
             DateTimeOffset sentAt = _time.GetUtcNow();
             byte[] pingPayload = PerfWire.EncodePingPayload(seq, 0);
 
-            Task<(LinkFrame Frame, FrameQuality Quality)?> wait = WaitForFrameAsync(
-                station, (frame, quality) => IsPongFor(frame, session, seq),
-                options.PingTimeout, _time, cancellationToken);
+            // Listen first, so a pong that comes back inside our own transmit is not missed,
+            // but start the clock on the timeout only once the probe is actually on air. Armed
+            // before the send, the timeout is running through this station's own TXDELAY and
+            // modulation, and can in principle expire against a frame that has not left yet.
+            using var wait = new FrameWait(station, (frame, quality) => IsPongFor(frame, session, seq));
 
             await station.SendAsync(
                 station.Frame(LinkFrameType.PerfPing, session, pingPayload), cancellationToken)
                 .ConfigureAwait(false);
-            (LinkFrame Frame, FrameQuality Quality)? answer = await wait.ConfigureAwait(false);
+            (LinkFrame Frame, FrameQuality Quality)? answer =
+                await wait.AnswerAsync(options.PingTimeout, _time, cancellationToken)
+                    .ConfigureAwait(false);
 
             if (answer is not null)
             {
@@ -390,6 +410,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         }
 
         station.FrameReceived += OnFrame;
+        _listening = true;
         try
         {
             await foreach (LinkFrame ping in pending.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -405,6 +426,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         }
         finally
         {
+            _listening = false;
             station.FrameReceived -= OnFrame;
         }
     }
@@ -436,36 +458,73 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         && echoedSeq == seq;
 
     /// <summary>
-    /// Waits for the next frame <paramref name="predicate"/> accepts, or gives up after
-    /// <paramref name="timeout"/> and returns null.
+    /// Listens for the next frame a predicate accepts, from the moment it is made, and is then
+    /// asked for the answer with a timeout.
     /// </summary>
-    private static async Task<(LinkFrame Frame, FrameQuality Quality)?> WaitForFrameAsync(
-        IStation station,
-        Func<LinkFrame, FrameQuality, bool> predicate,
-        TimeSpan timeout,
-        TimeProvider time,
-        CancellationToken cancellationToken)
+    /// <remarks>
+    /// Two steps rather than one so that the subscription can be in place before a probe is
+    /// transmitted while the timeout only starts once it has been. One call that did both had
+    /// the timeout covering this station's own transmit, which is neither what a round trip
+    /// means nor safe: it can expire against a frame that has not gone out yet.
+    /// </remarks>
+    private sealed class FrameWait : IDisposable
     {
-        var found = new TaskCompletionSource<(LinkFrame, FrameQuality)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly IStation _station;
+        private readonly TaskCompletionSource<(LinkFrame, FrameQuality)> _found =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        void OnFrame(LinkFrame frame, FrameQuality quality)
+        private readonly Func<LinkFrame, FrameQuality, bool> _predicate;
+        private bool _disposed;
+
+        public FrameWait(IStation station, Func<LinkFrame, FrameQuality, bool> predicate)
         {
-            if (predicate(frame, quality))
+            _station = station;
+            _predicate = predicate;
+            _station.FrameReceived += OnFrame;
+        }
+
+        /// <summary>The frame, or null if none arrived inside <paramref name="timeout"/>.</summary>
+        public async Task<(LinkFrame Frame, FrameQuality Quality)?> AnswerAsync(
+            TimeSpan timeout, TimeProvider time, CancellationToken cancellationToken)
+        {
+            if (_found.Task.IsCompleted)
             {
-                found.TrySetResult((frame, quality));
+                return await _found.Task.ConfigureAwait(false);
+            }
+
+            // The timeout's own timer is cancelled as soon as the answer arrives, rather than
+            // left running with nothing waiting on it.
+            using var expired = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            try
+            {
+                Task winner = await Task
+                    .WhenAny(_found.Task, Task.Delay(timeout, time, expired.Token))
+                    .ConfigureAwait(false);
+                return winner == _found.Task ? await _found.Task.ConfigureAwait(false) : null;
+            }
+            finally
+            {
+                await expired.CancelAsync().ConfigureAwait(false);
             }
         }
 
-        station.FrameReceived += OnFrame;
-        try
+        public void Dispose()
         {
-            Task winner = await Task.WhenAny(found.Task, Task.Delay(timeout, time, cancellationToken))
-                .ConfigureAwait(false);
-            return winner == found.Task ? await found.Task.ConfigureAwait(false) : null;
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _station.FrameReceived -= OnFrame;
         }
-        finally
+
+        private void OnFrame(LinkFrame frame, FrameQuality quality)
         {
-            station.FrameReceived -= OnFrame;
+            if (_predicate(frame, quality))
+            {
+                _found.TrySetResult((frame, quality));
+            }
         }
     }
 }

@@ -67,6 +67,7 @@ public sealed class ChatSession : IAsyncDisposable
     // locked: every one of them is a single word whose latest value is the whole question.
     private volatile Pending? _pending;
     private volatile bool _waitingForChannel;
+    private int _owed;
     private volatile bool _started;
     private volatile bool _disposed;
     private byte _nextSeq;
@@ -147,6 +148,18 @@ public sealed class ChatSession : IAsyncDisposable
 
     /// <summary>True while a backoff is waiting for somebody else to stop transmitting.</summary>
     public bool WaitingForChannel => _waitingForChannel;
+
+    /// <summary>
+    /// True while this session has something to put on air, or is putting it there.
+    /// </summary>
+    /// <remarks>
+    /// An acknowledgement is queued the instant the line it answers is decoded, inside the far
+    /// station's own transmit, and goes out from the pump a moment later. Between those two
+    /// points this session owes the other end an answer, and this says so. A test driving a
+    /// clock of its own must not move time across that gap, or it fires the sender's ack
+    /// timeout against an acknowledgement that was already on its way.
+    /// </remarks>
+    public bool Sending => Volatile.Read(ref _owed) > 0;
 
     /// <summary>True between <see cref="Start"/> and disposal.</summary>
     public bool IsRunning => _started && !_disposed;
@@ -379,8 +392,13 @@ public sealed class ChatSession : IAsyncDisposable
 
     private void Post(LinkFrame frame, TaskCompletionSource<TimeSpan>? completion)
     {
+        // Counted here rather than asked of the channel: an unbounded channel with a single
+        // reader does not support being counted, and this has to be true from the moment the
+        // frame is posted anyway. See Sending.
+        Interlocked.Increment(ref _owed);
         if (!_outbox.Writer.TryWrite(new Outbound(frame, completion)))
         {
+            Interlocked.Decrement(ref _owed);
             completion?.TrySetCanceled();
         }
     }
@@ -408,6 +426,7 @@ public sealed class ChatSession : IAsyncDisposable
         {
             while (_outbox.Reader.TryRead(out Outbound? abandoned))
             {
+                Interlocked.Decrement(ref _owed);
                 abandoned.Completion?.TrySetCanceled();
             }
         }
@@ -439,6 +458,10 @@ public sealed class ChatSession : IAsyncDisposable
             {
                 item.Completion.TrySetException(failure);
             }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _owed);
         }
     }
 

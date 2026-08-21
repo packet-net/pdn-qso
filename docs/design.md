@@ -139,6 +139,56 @@ no background check. It
 Everything above except the network and the process call is in `ReleaseAsset`, which is pure
 and tested; `SelfUpgrade` is the thin shell around it.
 
+## 6d. Time in the tests
+
+**No test reads the wall clock.** Two of them decided things by it and both failed on a loaded
+CI runner in one day; the fix is structural rather than a larger number.
+
+- **`VirtualClock`** is a `TimeProvider` with its own timer queue. It starts at a fixed instant
+  and moves only when something moves it. Every `Station`, `ChatSession`, `FileSender`,
+  `FileReceiver` and `PerfRun` in a test is given one.
+- **`VirtualTime`** drives it. `WaitForAsync(fact)` waits for something to become true with **no
+  deadline at all**: a deadline is a wall-clock measurement, and a test that hangs is a finding
+  the runner reports honestly. `RunAsync`/`UntilAsync` let the clock move so protocol timeouts
+  fire, on one rule: let everything runnable run, and move the clock on only when nothing is
+  busy and nothing has moved since the last look.
+- **Anything the clock must not be run past has to say so from the instant it takes the work
+  on**, not from when its own pump wakes up: `AudioLink.Carrying` (a burst in the air),
+  `ChatSession.Sending` (an answer owed, counted where the frame is posted),
+  `FileReceiver.Busy`. A flag raised late leaves a gap, and the gap is where a timeout fires
+  against an answer that was already on its way.
+- **A rig may charge for air time** by subscribing `AudioLink.Carried` to its clock, which moves
+  it by each burst's own sample count over the link's rate. The file transfer tests do, because
+  a sender that transmits for free can pour symbols for ever without a patience measured in
+  seconds ever coming due. Their intervals are the shipped defaults' shape, an order of
+  magnitude quicker, because a block takes about a second at 1200 baud and an interval shorter
+  than that is not a test of anything.
+
+**The rig itself must not let the machine vote either.** Two things were found doing this and
+both are properties of the rig rather than of any test:
+
+- `AudioLink` drew its noise from one `Random` shared by both ends and consumed in whatever
+  order the two stations happened to transmit. The lossy transfer test therefore saw a
+  different link every run. Each burst now draws noise seeded by which end sent it and how many
+  that end has sent, so the tenth frame from a station always meets the same noise however the
+  two ends interleave. Counted per direction, so one end's traffic cannot shift the other's.
+- A receiving run is started by a call and is not listening until it has subscribed. On the air
+  the far end is never started by the same keystroke; in a test it is, and the first frame of
+  the run goes to nobody. `PerfRun.Listening` says when it would really hear something.
+
+**What was tried and does not work.** An exact quiescence signal - each party publishing the
+clock time it has caught up with, and counting as busy until it has - deadlocks. An air-time
+advance from the transmitting thread can move the clock between a party observing the time and
+parking on its next timer, and that party then waits for a clock that is waiting for it. The
+margin above (sixteen quiet rounds) is a margin and is described as one.
+
+Driving this found five defects in the library that the wall clock had been covering: a ping
+timeout armed before the frame it timed had been sent, two timeouts whose timers were left
+running after the answer arrived, a receiver that sat on a queued frame until its next poll tick
+instead of answering when it arrived, no way for a caller to know a receiving run had started,
+and (filed as #11 rather than fixed) a finished receiver whose Done frames are all lost going
+quiet while the sender spends its whole patience on it.
+
 ## 7. Phases and agents
 
 A (skeleton + Monitor + devices + settings) first; then B (chat ARQ), C (fountain + file), D (perf) in parallel; E (packaging, README, hand-off). Each phase is a PR with its own tests; the skeleton phase also brings `ci.yml` and `release.yml` (copied in shape from pdn-soundmodem, self-hosted runner labels, release notes from PR titles via `scripts/release-notes.py`).

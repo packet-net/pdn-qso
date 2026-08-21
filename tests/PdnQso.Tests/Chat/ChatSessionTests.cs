@@ -19,8 +19,6 @@ public class ChatSessionTests
 {
     private const string FastMode = "qpsk2400";
 
-    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(20);
-
     [Fact]
     public async Task A_Line_Crosses_And_Is_Acknowledged()
     {
@@ -28,11 +26,21 @@ public class ChatSessionTests
         List<ChatMessage> heard = Collect(rig.B);
         rig.StartAll();
 
-        ChatDelivery result = await rig.A.SendAsync("good evening, 59 in reading");
+        ChatDelivery result = await rig.RunAsync(rig.A.SendAsync("good evening, 59 in reading"));
 
         result.IsDelivered.Should().BeTrue();
         result.Attempts.Should().Be(1);
-        result.RoundTrip.Should().BePositive();
+
+        // The old assertion here was that the round trip was positive, which on the wall clock
+        // only ever meant "some real time went by while the machine did the work". On the
+        // session's own clock it says something real: this rig puts a burst across instantly,
+        // so a line acknowledged first time costs no protocol time at all, and anything other
+        // than zero here would mean a wait or a retry that this test says did not happen.
+        //
+        // Not compared against the clock's own elapsed time, which is a different number: the
+        // loop driving the clock may move it on once more while it is noticing that the send
+        // has finished, and that says nothing about the round trip the session measured.
+        result.RoundTrip.Should().Be(TimeSpan.Zero);
         lock (heard)
         {
             heard.Should().ContainSingle();
@@ -55,9 +63,9 @@ public class ChatSessionTests
         List<ChatMessage> atB = Collect(rig.B);
         rig.StartAll();
 
-        (await rig.A.SendAsync("how copy")).IsDelivered.Should().BeTrue();
-        (await rig.B.SendAsync("solid copy, 599")).IsDelivered.Should().BeTrue();
-        (await rig.A.SendAsync("many thanks, 73")).IsDelivered.Should().BeTrue();
+        (await rig.RunAsync(rig.A.SendAsync("how copy"))).IsDelivered.Should().BeTrue();
+        (await rig.RunAsync(rig.B.SendAsync("solid copy, 599"))).IsDelivered.Should().BeTrue();
+        (await rig.RunAsync(rig.A.SendAsync("many thanks, 73"))).IsDelivered.Should().BeTrue();
 
         lock (atB)
         {
@@ -95,7 +103,7 @@ public class ChatSessionTests
         rig.A.AttemptFailed += _ => rig.Link.Channel = ChatRig.Clean;
         rig.StartAll();
 
-        ChatDelivery result = await rig.A.SendAsync("did you get that one");
+        ChatDelivery result = await rig.RunAsync(rig.A.SendAsync("did you get that one"));
 
         result.IsDelivered.Should().BeTrue();
         result.Attempts.Should().Be(2, "the first acknowledgement was lost");
@@ -129,7 +137,7 @@ public class ChatSessionTests
         rig.Link.Channel = ChatRig.Dead;
         rig.StartAll();
 
-        ChatDelivery result = await rig.A.SendAsync("anybody on frequency");
+        ChatDelivery result = await rig.RunAsync(rig.A.SendAsync("anybody on frequency"));
 
         result.IsDelivered.Should().BeFalse();
         result.Attempts.Should().Be(5, "one attempt and four retries, counted honestly");
@@ -171,8 +179,7 @@ public class ChatSessionTests
             LinkFrameType.Chat, 0x77, ChatPayload.Encode(seq: 9, waveform: null, "said once"));
         await rig.StationA.SendAsync(line);
         await rig.StationA.SendAsync(line);
-        (await ChatRig.WaitUntilAsync(() => AckCount(acks) >= 2, Patience))
-            .Should().BeTrue("both copies are acknowledged");
+        await rig.RunUntilAsync(() => AckCount(acks) >= 2, "both copies are acknowledged");
 
         lock (heard)
         {
@@ -219,9 +226,14 @@ public class ChatSessionTests
         rig.StartAll();
         Task<ChatDelivery> send = rig.A.SendAsync("waiting my turn");
 
-        (await ChatRig.WaitUntilAsync(() => rig.A.WaitingForChannel, Patience))
-            .Should().BeTrue("the retry should be waiting for the channel, not transmitting over it");
-        await Task.Delay(200);
+        await rig.RunUntilAsync(
+            () => rig.A.WaitingForChannel,
+            "the retry should be waiting for the channel, not transmitting over it");
+
+        // Two hundred milliseconds of the protocol's own time, moved deliberately rather than
+        // waited out: the claim is that the backoff does not give up on a held channel, and
+        // that claim should not depend on how long the machine took to get here.
+        rig.Clock.Advance(TimeSpan.FromMilliseconds(200));
         rig.A.WaitingForChannel.Should().BeTrue("somebody else is still holding the channel");
         send.IsCompleted.Should().BeFalse();
         lock (heard)
@@ -230,7 +242,7 @@ public class ChatSessionTests
         }
 
         gate.Held = false;
-        ChatDelivery result = await send.WaitAsync(Patience);
+        ChatDelivery result = await rig.RunAsync(send);
 
         result.IsDelivered.Should().BeTrue();
         result.Attempts.Should().Be(2);
@@ -263,7 +275,7 @@ public class ChatSessionTests
         rig.Link.Channel = ChatRig.Dead;
         rig.StartAll();
 
-        ChatDelivery result = await rig.A.SendAsync("three goes at nothing");
+        ChatDelivery result = await rig.RunAsync(rig.A.SendAsync("three goes at nothing"));
 
         result.IsDelivered.Should().BeFalse();
         result.Attempts.Should().Be(3);
@@ -300,7 +312,7 @@ public class ChatSessionTests
         rig.Link.Channel = ChatRig.Dead;
         rig.StartAll();
 
-        ChatDelivery lost = await rig.A.SendAsync("into the noise");
+        ChatDelivery lost = await rig.RunAsync(rig.A.SendAsync("into the noise"));
 
         lost.IsDelivered.Should().BeFalse();
         lost.Attempts.Should().Be(2);
@@ -314,7 +326,7 @@ public class ChatSessionTests
         }
 
         rig.Link.Channel = ChatRig.Clean;
-        ChatDelivery next = await rig.A.SendAsync("better now");
+        ChatDelivery next = await rig.RunAsync(rig.A.SendAsync("better now"));
 
         next.IsDelivered.Should().BeTrue();
         next.Attempts.Should().Be(1);
@@ -363,7 +375,7 @@ public class ChatSessionTests
             waveforms[0].Reason.Should().Contain("delivered");
         }
 
-        (await rig.A.SendAsync("and one more")).IsDelivered.Should().BeTrue();
+        (await rig.RunAsync(rig.A.SendAsync("and one more"))).IsDelivered.Should().BeTrue();
         lock (heard)
         {
             heard.Should().HaveCount(4);
@@ -395,8 +407,7 @@ public class ChatSessionTests
 
         rig.StartAll();
 
-        (await ChatRig.WaitUntilAsync(() => Count(atA) >= 1 && Count(atB) >= 1, Patience))
-            .Should().BeTrue("both stations say hello when the conversation starts");
+        await ChatRig.WaitUntilAsync(() => Count(atA) >= 1 && Count(atB) >= 1);
         lock (atA)
         {
             atA.Should().AllBe("G0OLD-1");
@@ -408,8 +419,7 @@ public class ChatSessionTests
         }
 
         await rig.A.SendHelloAsync();
-        (await ChatRig.WaitUntilAsync(() => Count(atB) >= 2, Patience))
-            .Should().BeTrue("a hello can be sent again on request");
+        await ChatRig.WaitUntilAsync(() => Count(atB) >= 2);
     }
 
     [Fact]
@@ -425,7 +435,7 @@ public class ChatSessionTests
         List<ChatMessage> heard = Collect(rig.B);
         rig.StartAll();
 
-        ChatDelivery result = await rig.A.SendAsync("not for you");
+        ChatDelivery result = await rig.RunAsync(rig.A.SendAsync("not for you"));
 
         result.IsDelivered.Should().BeFalse("a station that is not listening to us does not answer");
         lock (heard)
