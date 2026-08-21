@@ -34,6 +34,19 @@ namespace PdnQso.Link.Perf;
 public sealed class PerfRun(TimeProvider? timeProvider = null)
 {
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+    private volatile bool _listening;
+
+    /// <summary>
+    /// True once a receiving run has subscribed and would hear a frame arriving now.
+    /// </summary>
+    /// <remarks>
+    /// A receiving run is started as a background task and does not become deaf-to-live in one
+    /// step: between the call and its subscription there is a moment in which a frame is simply
+    /// missed. On the air that is nothing, because the far end is not started by the same
+    /// keystroke. In a test where both ends are, it is the first frame of the run, and the
+    /// answer is to wait for this rather than to assume.
+    /// </remarks>
+    public bool Listening => _listening;
 
     /// <summary>A running report fired after each frame sent or answered, for a UI to show a
     /// measurement filling in as it happens rather than only at the end.</summary>
@@ -235,6 +248,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         }
 
         station.FrameReceived += OnFrame;
+        _listening = true;
         try
         {
             byte wrapSession = await wrapUp.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -269,6 +283,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         }
         finally
         {
+            _listening = false;
             station.FrameReceived -= OnFrame;
         }
     }
@@ -395,6 +410,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         }
 
         station.FrameReceived += OnFrame;
+        _listening = true;
         try
         {
             await foreach (LinkFrame ping in pending.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -410,6 +426,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         }
         finally
         {
+            _listening = false;
             station.FrameReceived -= OnFrame;
         }
     }

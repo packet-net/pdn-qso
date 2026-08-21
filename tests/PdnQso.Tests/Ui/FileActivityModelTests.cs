@@ -307,9 +307,9 @@ public class FileActivityModelTests : IDisposable
         StatusInterval = TimeSpan.FromSeconds(2),
         ListenInterval = TimeSpan.FromSeconds(2),
         OfferInterval = TimeSpan.FromSeconds(4),
-        PollInterval = TimeSpan.FromMilliseconds(50),
+        PollInterval = TimeSpan.FromMilliseconds(500),
         PatienceIntervals = 15,
-        DoneLinger = TimeSpan.FromSeconds(2),
+        DoneLinger = TimeSpan.FromSeconds(30),
     };
 
     private static byte[] Content(int length)

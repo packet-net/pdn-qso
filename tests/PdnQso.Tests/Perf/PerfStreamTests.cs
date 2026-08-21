@@ -42,6 +42,11 @@ public class PerfStreamTests
         var options = new PerfStreamOptions { FrameCount = 12, PayloadSize = 40 };
 
         Task<PerfReport> receiverTask = receiverRun.RunStreamReceiverAsync(receiver);
+
+        // The far end is started by the same keystroke as this one, which on the air it never
+        // is. Wait until it is actually listening, or the first frame of the run goes out to
+        // nobody and the count comes back one short.
+        await VirtualTime.WaitForAsync(() => receiverRun.Listening);
         PerfReport senderReport = await senderRun.RunStreamSenderAsync(
             sender, link.ModemA, link.SampleRate, options);
         PerfReport receiverReport = await receiverTask;
@@ -95,6 +100,11 @@ public class PerfStreamTests
 
         var receiverRun = new PerfRun(clock);
         Task<PerfReport> receiverTask = receiverRun.RunStreamReceiverAsync(receiver);
+
+        // The far end is started by the same keystroke as this one, which on the air it never
+        // is. Wait until it is actually listening, or the first frame of the run goes out to
+        // nobody and the count comes back one short.
+        await VirtualTime.WaitForAsync(() => receiverRun.Listening);
 
         byte session = 0x55;
         for (int i = 0; i < frameCount; i++)

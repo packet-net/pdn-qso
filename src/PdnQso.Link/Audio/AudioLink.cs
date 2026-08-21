@@ -58,7 +58,7 @@ public sealed class AudioLink : IDisposable
 {
     private readonly Endpoint _a;
     private readonly Endpoint _b;
-    private readonly Random _noise;
+    private readonly int _noiseSeed;
     private int _carrying;
     private long _crossings;
     private bool _disposed;
@@ -68,7 +68,7 @@ public sealed class AudioLink : IDisposable
         Mode = mode;
         SampleRate = sampleRate;
         Channel = channel;
-        _noise = new Random(channel.Seed);
+        _noiseSeed = channel.Seed;
 
         // The catalogue's frame sink is not the monitor path: a plain-IL2P frame an IL2P+CRC
         // link was not told to accept never reaches it. FrameDecoded gets everything the
@@ -162,6 +162,7 @@ public sealed class AudioLink : IDisposable
         Endpoint target = from == LinkEnd.A ? _b : _a;
 
         float[] audio = source.Modem.Modulate(ax25Frame, txDelayMilliseconds);
+        int burst = source.NextBurst();
         var heard = new List<ReceivedFrame>();
         void OnDecoded(byte[] frame, Packet.SoundModem.Modems.FrameQuality quality) =>
             heard.Add(new ReceivedFrame(frame, quality));
@@ -169,7 +170,7 @@ public sealed class AudioLink : IDisposable
         target.Modem.FrameDecoded += OnDecoded;
         try
         {
-            Carry(audio, target);
+            Carry(audio, target, burst);
         }
         finally
         {
@@ -196,13 +197,20 @@ public sealed class AudioLink : IDisposable
     /// Puts a burst through the channel and feeds it to <paramref name="target"/> in blocks,
     /// as a real capture device would, so nothing can pass here that would fail on a stream.
     /// </summary>
-    private void Carry(ReadOnlySpan<float> audio, Endpoint target)
+    private void Carry(ReadOnlySpan<float> audio, Endpoint target, int burst)
     {
         Interlocked.Increment(ref _carrying);
         int carried = 0;
         try
         {
-            float[] through = Channel.Apply(audio, SampleRate, _noise);
+            // Noise per burst, seeded by which end sent it and how many it has sent, rather
+            // than drawn from one stream shared by both ends. A shared stream is consumed in
+            // whatever order the two stations happen to transmit, which is the machine's
+            // business and not the channel's: the same test then sees a different channel from
+            // run to run, and a claim about what a lossy link costs stops being a claim at all.
+            // Counted per direction so that one end's traffic does not shift the other's noise.
+            var noise = new Random(_noiseSeed + burst);
+            float[] through = Channel.Apply(audio, SampleRate, noise);
             SamplesCarried += through.Length;
             carried = through.Length;
 
@@ -224,7 +232,16 @@ public sealed class AudioLink : IDisposable
     /// <summary>One end of the link: a modem, and the audio device a station sees.</summary>
     private sealed class Endpoint(AudioLink link, LinkEnd end, IModem modem) : IAudioDevice
     {
+        private int _bursts;
         private bool _ptt;
+
+        /// <summary>How many bursts this end has sent, and the seed offset for the next.</summary>
+        /// <remarks>
+        /// Offset by which end it is, so A's tenth burst and B's tenth do not draw the same
+        /// noise. A big stride, because these are seeds and not samples.
+        /// </remarks>
+        internal int NextBurst() =>
+            (Interlocked.Increment(ref _bursts) * 2) + (end == LinkEnd.A ? 0 : 1);
 
         public IModem Modem { get; } = modem;
 
@@ -253,7 +270,7 @@ public sealed class AudioLink : IDisposable
             SetPtt(true);
             try
             {
-                link.Carry(samples.Span, end == LinkEnd.A ? link._b : link._a);
+                link.Carry(samples.Span, end == LinkEnd.A ? link._b : link._a, NextBurst());
             }
             finally
             {

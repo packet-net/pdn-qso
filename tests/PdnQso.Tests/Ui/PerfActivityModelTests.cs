@@ -65,6 +65,10 @@ public class PerfActivityModelTests : IDisposable
         Task<PerfReport> receiving = receiverRun.RunStreamReceiverAsync(
             receiver, CancellationToken.None);
 
+        // The far end is started by the same keystroke as this one, which on the air it never
+        // is. Wait until it is actually listening, or the first frame goes out to nobody.
+        await VirtualTime.WaitForAsync(() => receiverRun.Listening);
+
         atSender.StartRun();
         PerfReport report = await senderRun.RunStreamSenderAsync(
             sender,
@@ -116,6 +120,7 @@ public class PerfActivityModelTests : IDisposable
         var responderRun = new PerfRun(clock);
         using var stopResponder = new CancellationTokenSource();
         Task responding = responderRun.RunPongResponderAsync(responder, stopResponder.Token);
+        await VirtualTime.WaitForAsync(() => responderRun.Listening);
 
         model.StartRun();
         model.StatusLine.Should().StartWith("running ping-pong");

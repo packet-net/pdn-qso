@@ -41,6 +41,7 @@ public class PerfPingPongTests
         var responderRun = new PerfRun(clock);
         using var responderCts = new CancellationTokenSource();
         Task responderTask = responderRun.RunPongResponderAsync(responder, responderCts.Token);
+        await VirtualTime.WaitForAsync(() => responderRun.Listening);
 
         var pingerRun = new PerfRun(clock);
         var options = new PerfPingOptions { PingCount = 5, PingTimeout = TimeSpan.FromSeconds(5) };

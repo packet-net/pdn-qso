@@ -36,10 +36,19 @@ public static class VirtualTime
     /// Rounds with nothing having happened before the clock is allowed to move.
     /// </summary>
     /// <remarks>
-    /// One round of nothing at all is the cheap insurance against firing a timeout in the gap
-    /// between an answer arriving and the end that was waiting for it noticing.
+    /// The gap this covers is a thread that is runnable and has not been given a slot: it holds
+    /// no timer and shows no progress, so it is indistinguishable from an idle one, and moving
+    /// the clock across it can fire a timeout against work that was about to happen. Sixteen
+    /// rounds is a hundred and twenty-eight yields of the machine, which on a box running eight
+    /// test classes at once is a real chance rather than a token one, and it costs nothing when
+    /// the rig is genuinely idle.
+    ///
+    /// It is a margin and not a proof. The exact version - a party publishing the clock time it
+    /// has caught up with - was tried and is a deadlock: an air-time advance from another
+    /// thread can move the clock between a party observing the time and parking on its next
+    /// timer, and the party then waits for a clock that is waiting for the party.
     /// </remarks>
-    private const int StillRounds = 2;
+    private const int StillRounds = 16;
 
     /// <summary>
     /// Waits for something to become true, for as long as it takes.
@@ -108,7 +117,12 @@ public static class VirtualTime
         ArgumentNullException.ThrowIfNull(done);
 
         TimeSpan allowed = budget ?? DefaultBudget;
-        TimeSpan spent = TimeSpan.Zero;
+
+        // Measured from the clock itself, not from the steps this loop takes: a rig that
+        // charges for air time moves the clock without this loop's help, and a budget that
+        // counted only its own steps would let a transfer run for ten minutes of the protocol's
+        // time while believing it had spent one.
+        TimeSpan started = clock.Elapsed;
         int still = 0;
         int spins = 0;
         long moved = Moved(clock, progress);
@@ -157,12 +171,12 @@ public static class VirtualTime
             // enormous jump through and then noticed would report the thing it was waiting for
             // as having happened inside a budget that never covered it.
             if (clock.NextDue is DateTimeOffset next
-                && spent + (next - clock.GetUtcNow()) > allowed)
+                && (clock.Elapsed - started) + (next - clock.GetUtcNow()) > allowed)
             {
                 return done();
             }
 
-            if (clock.TryAdvanceToNextDue() is not TimeSpan step)
+            if (clock.TryAdvanceToNextDue() is null)
             {
                 // Nothing scheduled, nothing busy, nothing moving. That is not the same as
                 // over: a loop between an answer and its next timeout holds no timer either,
@@ -180,8 +194,7 @@ public static class VirtualTime
             }
 
             spins = 0;
-            spent += step;
-            if (spent > allowed)
+            if (clock.Elapsed - started > allowed)
             {
                 return done();
             }

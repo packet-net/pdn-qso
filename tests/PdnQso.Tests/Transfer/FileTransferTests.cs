@@ -94,11 +94,14 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         await using var rig = Rig.Build(channel);
         byte[] content = Content(1280, seed: 2);
 
+        // Patience well past anything this transfer can need. What is measured here is that
+        // repair symbols are sent and counted, and a bad link that costs sixty symbols at a
+        // second of air time each takes a couple of minutes of the protocol's own time.
         FileTransferOptions options = Fast() with
         {
             StatusInterval = TimeSpan.FromSeconds(3),
             ListenInterval = TimeSpan.FromSeconds(3),
-            PatienceIntervals = 40,
+            PatienceIntervals = 200,
         };
         var sender = new FileSender(rig.A, options, idSeed: 99, timeProvider: rig.Clock);
         var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
@@ -111,11 +114,15 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
             }
         };
 
+        // Half an hour of the protocol's time to play with. A kilobyte and a bit over a link
+        // that eats a third of what crosses it really does take ten minutes of modelled time,
+        // and how long it takes is not what this is measuring.
+        TimeSpan budget = TimeSpan.FromMinutes(30);
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
         FileTransferResult sent = await rig.RunAsync(
-            sender.SendAsync("payload.bin", content, CancellationToken.None), receiver);
+            sender.SendAsync("payload.bin", content, CancellationToken.None), receiver, budget: budget);
         // The receiver has its own linger to finish, on the same clock, so it is driven too.
-        FileTransferResult received = await rig.RunAsync(receiving, receiver);
+        FileTransferResult received = await rig.RunAsync(receiving, receiver, budget: budget);
 
         output.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
@@ -389,9 +396,15 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         StatusInterval = TimeSpan.FromSeconds(2),
         ListenInterval = TimeSpan.FromSeconds(2),
         OfferInterval = TimeSpan.FromSeconds(4),
-        PollInterval = TimeSpan.FromMilliseconds(50),
+        PollInterval = TimeSpan.FromMilliseconds(500),
         PatienceIntervals = 15,
-        DoneLinger = TimeSpan.FromSeconds(2),
+
+        // Long enough to matter on a link that loses frames. At two seconds, which is under two
+        // frame times here, the receiver got one repeat of its Done and then stopped: on the
+        // lossy channel both copies were eaten about one run in three, and the sender then
+        // poured symbols at a receiver that had finished and gone away until its own patience
+        // ran out. The shipped default is twenty seconds against far longer intervals.
+        DoneLinger = TimeSpan.FromSeconds(30),
     };
 
     private static byte[] Content(int length, int seed)
@@ -446,11 +459,13 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         public Task<FileTransferResult> RunAsync(
             Task<FileTransferResult> work,
             FileReceiver? answering = null,
-            Func<bool>? alsoBusy = null) =>
+            Func<bool>? alsoBusy = null,
+            TimeSpan? budget = null) =>
             VirtualTime.RunAsync(
                 Clock,
                 work,
                 () => Carrying || answering?.Busy == true || alsoBusy?.Invoke() == true,
+                budget ?? TimeSpan.FromMinutes(5),
                 progress: () => Crossings);
 
         /// <summary>The transmitting station, on the shared medium.</summary>

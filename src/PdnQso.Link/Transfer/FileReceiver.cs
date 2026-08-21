@@ -77,10 +77,12 @@ public sealed class FileReceiver
     /// answer on air.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The queue side of this is true from the instant a frame is taken in, which happens
     /// inside the sender's own transmit. A test driving a clock of its own uses it to know that
     /// an answer is owed, so it does not move time on and time the sender out against a status
     /// or a Done that was already on its way.
+    /// </para>
     /// </remarks>
     public bool Busy => !_inbox.IsEmpty || Volatile.Read(ref _sending) > 0;
 
