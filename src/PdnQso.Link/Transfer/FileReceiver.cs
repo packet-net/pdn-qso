@@ -37,6 +37,7 @@ public sealed class FileReceiver
     private readonly ConcurrentQueue<LinkFrame> _inbox = new();
     private readonly SemaphoreSlim _arrived = new(0);
     private int _sending;
+    private int _working;
 
     private LtDecoder? _decoder;
     private FileOfferPayload _offer;
@@ -83,8 +84,17 @@ public sealed class FileReceiver
     /// an answer is owed, so it does not move time on and time the sender out against a status
     /// or a Done that was already on its way.
     /// </para>
+    /// <para>
+    /// An empty inbox is not the end of the work. What the frames meant is worked out after
+    /// they come off the queue - the last symbol is peeled, the file is checked and written,
+    /// and only then does a Done go on air - and a receiver that let this drop while it was
+    /// deciding would leave exactly the gap the flag exists to close. So the turn the loop
+    /// takes counts as busy too, from the moment it starts draining the inbox until it parks
+    /// again.
+    /// </para>
     /// </remarks>
-    public bool Busy => !_inbox.IsEmpty || Volatile.Read(ref _sending) > 0;
+    public bool Busy =>
+        !_inbox.IsEmpty || Volatile.Read(ref _working) > 0 || Volatile.Read(ref _sending) > 0;
 
     /// <summary>
     /// Waits for the next thing to do: a frame arriving, or the poll interval passing.
@@ -165,59 +175,76 @@ public sealed class FileReceiver
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                while (_inbox.TryDequeue(out LinkFrame? frame))
+                FileTransferResult? finished = null;
+
+                // Raised for the whole turn, not only while the inbox has something in it:
+                // see Busy. Put down again for anything that waits for time to pass, which is
+                // the only kind of moment where this receiver has nothing in hand.
+                Interlocked.Increment(ref _working);
+                try
                 {
-                    switch (frame.Type)
+                    while (_inbox.TryDequeue(out LinkFrame? frame))
                     {
-                        case LinkFrameType.FileOffer:
-                            if (HandleOffer(frame, ref start, ref lastStatus, ref lastSymbol))
+                        switch (frame.Type)
+                        {
+                            case LinkFrameType.FileOffer:
+                                if (HandleOffer(frame, ref start, ref lastStatus, ref lastSymbol))
+                                {
+                                    statusAsked = true;
+                                }
+
+                                break;
+
+                            case LinkFrameType.FileSymbol when _decoder is not null
+                                && frame.Session == _session:
+                                if (HandleSymbol(frame, start))
+                                {
+                                    lastSymbol = _time.GetUtcNow();
+                                }
+
+                                break;
+
+                            default:
+                                break;
+                        }
+                    }
+
+                    if (_decoder is not null)
+                    {
+                        if (_decoder.IsComplete)
+                        {
+                            finished = await CompleteAsync(start, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            DateTimeOffset now = _time.GetUtcNow();
+                            if (now - lastSymbol > _options.Patience)
                             {
-                                statusAsked = true;
+                                finished = Finish(
+                                    start, path: null,
+                                    reason: string.Create(
+                                        CultureInfo.InvariantCulture,
+                                        $"the sender stopped: no symbol for {(now - lastSymbol).TotalSeconds:0.#} s "
+                                        + $"with {_decoder.Decoded} of {_decoder.BlockCount} blocks decoded"));
                             }
-
-                            break;
-
-                        case LinkFrameType.FileSymbol when _decoder is not null
-                            && frame.Session == _session:
-                            if (HandleSymbol(frame, start))
+                            else if (statusAsked || now - lastStatus >= _options.StatusInterval)
                             {
-                                lastSymbol = _time.GetUtcNow();
+                                await SendStatusAsync(cancellationToken).ConfigureAwait(false);
+                                lastStatus = _time.GetUtcNow();
+                                statusAsked = false;
                             }
-
-                            break;
-
-                        default:
-                            break;
+                        }
                     }
                 }
-
-                if (_decoder is null)
+                finally
                 {
-                    await PauseAsync(cancellationToken).ConfigureAwait(false);
-                    continue;
+                    Interlocked.Decrement(ref _working);
                 }
 
-                if (_decoder.IsComplete)
+                if (finished is { } result)
                 {
-                    return await CompleteAsync(start, cancellationToken).ConfigureAwait(false);
-                }
-
-                DateTimeOffset now = _time.GetUtcNow();
-                if (now - lastSymbol > _options.Patience)
-                {
-                    return Finish(
-                        start, path: null,
-                        reason: string.Create(
-                            CultureInfo.InvariantCulture,
-                            $"the sender stopped: no symbol for {(now - lastSymbol).TotalSeconds:0.#} s "
-                            + $"with {_decoder.Decoded} of {_decoder.BlockCount} blocks decoded"));
-                }
-
-                if (statusAsked || now - lastStatus >= _options.StatusInterval)
-                {
-                    await SendStatusAsync(cancellationToken).ConfigureAwait(false);
-                    lastStatus = _time.GetUtcNow();
-                    statusAsked = false;
+                    return result;
                 }
 
                 await PauseAsync(cancellationToken).ConfigureAwait(false);
@@ -353,6 +380,12 @@ public sealed class FileReceiver
     /// disc: a sender whose Done was eaten by the channel is still transmitting, and one more
     /// Done stops it far sooner than its patience would.
     /// </summary>
+    /// <remarks>
+    /// Called from inside the loop's own turn, and the turn's <see cref="Busy"/> flag is put
+    /// down for the duration: this is a wait for a stated length of time, and a receiver that
+    /// held itself busy through it would be waiting for a clock that was waiting for the
+    /// receiver. Each round of actual work inside it picks the flag back up.
+    /// </remarks>
     private async Task LingerAsync(byte[] donePayload, CancellationToken cancellationToken)
     {
         if (_options.DoneLinger <= TimeSpan.Zero)
@@ -360,28 +393,44 @@ public sealed class FileReceiver
             return;
         }
 
-        DateTimeOffset until = _time.GetUtcNow() + _options.DoneLinger;
-        while (_time.GetUtcNow() < until)
+        Interlocked.Decrement(ref _working);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            bool askedAgain = false;
-            while (_inbox.TryDequeue(out LinkFrame? frame))
+            DateTimeOffset until = _time.GetUtcNow() + _options.DoneLinger;
+            while (_time.GetUtcNow() < until)
             {
-                if (frame.Session == _session
-                    && frame.Type is LinkFrameType.FileSymbol or LinkFrameType.FileOffer)
+                cancellationToken.ThrowIfCancellationRequested();
+                Interlocked.Increment(ref _working);
+                try
                 {
-                    askedAgain = true;
+                    bool askedAgain = false;
+                    while (_inbox.TryDequeue(out LinkFrame? frame))
+                    {
+                        if (frame.Session == _session
+                            && frame.Type is LinkFrameType.FileSymbol or LinkFrameType.FileOffer)
+                        {
+                            askedAgain = true;
+                        }
+                    }
+
+                    if (askedAgain)
+                    {
+                        await SendOnAirAsync(
+                            _station.Frame(LinkFrameType.FileDone, _session, donePayload), cancellationToken)
+                            .ConfigureAwait(false);
+                    }
                 }
-            }
+                finally
+                {
+                    Interlocked.Decrement(ref _working);
+                }
 
-            if (askedAgain)
-            {
-                await SendOnAirAsync(
-                    _station.Frame(LinkFrameType.FileDone, _session, donePayload), cancellationToken)
-                    .ConfigureAwait(false);
+                await PauseAsync(cancellationToken).ConfigureAwait(false);
             }
-
-            await PauseAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Increment(ref _working);
         }
     }
 

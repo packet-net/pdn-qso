@@ -157,9 +157,14 @@ public class PerfPingPongTests
             }
         });
 
-        bool Busy() => link.Carrying || Volatile.Read(ref owed) > 0;
-
         var pingerRun = new PerfRun(clock);
+
+        // Both ends of the exchange, not just the far one. The responder owes a reply from the
+        // moment it takes the ping in; this end has been given the reply from the moment its
+        // station decodes it, and is not done with it until its own loop has been given a
+        // thread to notice. Move the clock through either gap and the probe's patience fires
+        // against an answer that had already arrived.
+        bool Busy() => link.Carrying || Volatile.Read(ref owed) > 0 || pingerRun.Answered;
         // The one unanswered ping is the only thing that may time out. On the wall clock this
         // was a three second timeout that a busy CI runner beat, and the run then counted two
         // losses instead of one; on this clock the timeout is three seconds of the protocol's
@@ -175,18 +180,16 @@ public class PerfPingPongTests
         responderCts.Cancel();
         await VirtualTime.WaitForAsync(() => responderLoop.IsCompleted);
 
-        // At least one timeout was waited out, because one probe was deliberately not answered.
-        // Not exactly one: that would be asserting the modem answered every other probe on a
-        // noiseless link, which is its business and not this run's (issue #12).
-        clock.Elapsed.Should().BeGreaterThanOrEqualTo(
-            options.PingTimeout, "the unanswered probe costs a full timeout");
+        clock.Elapsed.Should().Be(
+            options.PingTimeout,
+            "exactly one ping went unanswered, so exactly one timeout was waited out");
 
-        report.FramesSent.Should().Be(4, "four probes were asked for");
-        report.FramesLost.Should().BeGreaterThanOrEqualTo(1, "one was deliberately not answered");
-        (report.FramesHeard + report.FramesLost).Should().Be(4, "every probe is one or the other");
-        report.FramesDelivered.Should().Be(report.FramesHeard, "none was a duplicate");
-        report.FrameErrorRate.Should().BeApproximately((double)report.FramesLost / 4, 0.0001);
-        report.MeanRttMs.Should().NotBeNull("the ones that were answered were timed");
+        report.FramesSent.Should().Be(4);
+        report.FramesHeard.Should().Be(3);
+        report.FramesDelivered.Should().Be(3);
+        report.FramesLost.Should().Be(1);
+        report.FrameErrorRate.Should().BeApproximately(0.25, 0.0001);
+        report.MeanRttMs.Should().NotBeNull("three of the four still answered");
     }
 
     /// <summary>

@@ -201,7 +201,8 @@ public sealed class ChatSession : IAsyncDisposable
     public Task SendHelloAsync(CancellationToken cancellationToken = default)
     {
         RequireRunningAndTransmitCapable();
-        var completion = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<(TimeSpan Air, long Left)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         Post(_station.Frame(LinkFrameType.Hello, SessionId), completion);
         return completion.Task.WaitAsync(cancellationToken);
     }
@@ -308,14 +309,31 @@ public sealed class ChatSession : IAsyncDisposable
             {
                 byte[] payload = ChatPayload.Encode(seq, waveform, line);
                 LinkFrame frame = _station.Frame(LinkFrameType.Chat, SessionId, payload);
-                TimeSpan air = await TransmitAsync(frame, cancellationToken).ConfigureAwait(false);
-                long sent = _time.GetTimestamp();
-                await pending.Acknowledged.Task
-                    .WaitAsync(AckTimeoutFor(air), _time, cancellationToken)
+                (TimeSpan air, long left) = await TransmitAsync(frame, cancellationToken)
                     .ConfigureAwait(false);
+                try
+                {
+                    await pending.Acknowledged.Task
+                        .WaitAsync(AckTimeoutFor(air), _time, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (TimeoutException) when (pending.AcknowledgedAt is not null)
+                {
+                    // The answer was already in hand. A timeout and the acknowledgement it is
+                    // waiting for can land at the same moment, and the wait is then decided by
+                    // which continuation the machine happens to run first, which is not a fact
+                    // about the link at all. An answer this station has already decoded beats
+                    // its own stopwatch; retransmitting a line the far end has acknowledged
+                    // costs air time and reports a retry that never needed to happen.
+                }
+
+                // Stamped in the receive handler on both the ordinary path and the one above,
+                // so the fallback is only there to keep this total: an answer with no time on
+                // it is one that cost nothing but the air time.
+                long answered = pending.AcknowledgedAt ?? left;
 
                 OnDelivered(attempt);
-                return ChatDelivery.Delivered(seq, attempt, air + _time.GetElapsedTime(sent));
+                return ChatDelivery.Delivered(seq, attempt, air + RoundTripFrom(left, answered));
             }
             catch (TimeoutException)
             {
@@ -331,6 +349,23 @@ public sealed class ChatSession : IAsyncDisposable
 
         Interlocked.Increment(ref _failed);
         return ChatDelivery.Failed(seq, attempts);
+    }
+
+    /// <summary>
+    /// How long the answer took, from the moment the line left the transmitter to the moment
+    /// the acknowledgement was decoded.
+    /// </summary>
+    /// <remarks>
+    /// Both ends of it are stamped where the thing happened - in the transmit pump and in the
+    /// receive handler - and not where this task noticed. A figure taken when the waiting task
+    /// is next given a thread measures the machine's queue as well as the link, and on a busy
+    /// box the machine's queue is the larger of the two. Never negative: the two stamps come
+    /// from different threads and a clock a caller drives can move between them.
+    /// </remarks>
+    private TimeSpan RoundTripFrom(long left, long answered)
+    {
+        TimeSpan trip = _time.GetElapsedTime(left, answered);
+        return trip < TimeSpan.Zero ? TimeSpan.Zero : trip;
     }
 
     /// <summary>
@@ -382,15 +417,19 @@ public sealed class ChatSession : IAsyncDisposable
     }
 
     /// <summary>Queues a frame and waits for it to leave the transmitter, timing it.</summary>
-    /// <returns>How long the transmission took, which is the burst's air time on a real device.</returns>
-    private async Task<TimeSpan> TransmitAsync(LinkFrame frame, CancellationToken cancellationToken)
+    /// <returns>How long the transmission took, which is the burst's air time on a real device,
+    /// and the timestamp at which it finished - stamped in the pump, so that what follows can
+    /// time an answer from when the frame left rather than from when this task woke up.</returns>
+    private async Task<(TimeSpan Air, long Left)> TransmitAsync(
+        LinkFrame frame, CancellationToken cancellationToken)
     {
-        var completion = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<(TimeSpan, long)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         Post(frame, completion);
         return await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private void Post(LinkFrame frame, TaskCompletionSource<TimeSpan>? completion)
+    private void Post(LinkFrame frame, TaskCompletionSource<(TimeSpan Air, long Left)>? completion)
     {
         // Counted here rather than asked of the channel: an unbounded channel with a single
         // reader does not support being counted, and this has to be true from the moment the
@@ -438,7 +477,7 @@ public sealed class ChatSession : IAsyncDisposable
         try
         {
             await _station.SendAsync(item.Frame, token).ConfigureAwait(false);
-            item.Completion?.TrySetResult(_time.GetElapsedTime(started));
+            item.Completion?.TrySetResult((_time.GetElapsedTime(started), _time.GetTimestamp()));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -535,7 +574,7 @@ public sealed class ChatSession : IAsyncDisposable
         }
 
         Pending? pending = _pending;
-        if (pending is not null && pending.Seq == seq)
+        if (pending is not null && pending.Seq == seq && pending.Answer(_time.GetTimestamp()))
         {
             pending.Acknowledged.TrySetResult(true);
         }
@@ -594,15 +633,47 @@ public sealed class ChatSession : IAsyncDisposable
     }
 
     /// <summary>A frame waiting its turn on the transmit pump.</summary>
-    private sealed record Outbound(LinkFrame Frame, TaskCompletionSource<TimeSpan>? Completion);
+    private sealed record Outbound(
+        LinkFrame Frame, TaskCompletionSource<(TimeSpan Air, long Left)>? Completion);
 
     /// <summary>The line in flight and the acknowledgement it is waiting for.</summary>
     private sealed class Pending(byte seq, string text, int attempt, int? waveform)
     {
+        private long _acknowledgedAt;
+        private int _claimed;
+        private int _answered;
+
         public byte Seq { get; } = seq;
 
         public TaskCompletionSource<bool> Acknowledged { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>
+        /// The timestamp at which the acknowledgement was decoded, or null while none has been.
+        /// </summary>
+        /// <remarks>
+        /// Set in the receive handler, before the waiting task is woken, so that "has it been
+        /// answered" is a fact from the moment the frame arrives rather than from the moment
+        /// something got round to noticing. The task's own completion is a poor substitute:
+        /// its continuation is queued, and a machine with nothing spare can leave it queued
+        /// for longer than the patience it is racing.
+        /// </remarks>
+        public long? AcknowledgedAt => Volatile.Read(ref _answered) == 0 ? null : Volatile.Read(ref _acknowledgedAt);
+
+        /// <summary>Records the arrival, once; returns whether this call was the first.</summary>
+        /// <remarks>The stamp is written before the flag that publishes it, so a reader that
+        /// sees the flag sees the time that goes with it and never a zero.</remarks>
+        public bool Answer(long at)
+        {
+            if (Interlocked.CompareExchange(ref _claimed, 1, 0) != 0)
+            {
+                return false;
+            }
+
+            Volatile.Write(ref _acknowledgedAt, at);
+            Volatile.Write(ref _answered, 1);
+            return true;
+        }
 
         public ChatOutstanding Snapshot() => new(Seq, text, attempt, waveform);
     }

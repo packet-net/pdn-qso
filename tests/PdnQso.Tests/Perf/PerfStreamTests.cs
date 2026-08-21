@@ -50,9 +50,7 @@ public class PerfStreamTests
         // The session byte is random when it is not given, and it goes into every frame, so
         // leaving it out means the twelve frames - and the audio they modulate to - are
         // different on every run. Pinned so that what this test puts on the air is the same
-        // thing twice, which is worth having on its own. It is not the cure for the rare lost
-        // frame recorded in the issue tracker: a sweep of every session value delivered all
-        // twelve every time.
+        // thing twice, which is worth having on its own.
         var options = new PerfStreamOptions { FrameCount = 12, PayloadSize = 40, Session = 0x33 };
 
         Task<PerfReport> receiverTask = receiverRun.RunStreamReceiverAsync(receiver);
@@ -69,19 +67,14 @@ public class PerfStreamTests
         clock.Elapsed.Should().Be(TimeSpan.Zero, "a clean stream never waits for a timeout");
 
         senderReport.FramesSent.Should().Be(12, "the sender was asked for twelve");
-
-        // What this measures is that the far end's count comes back and fills in the near end's
-        // table. Whether the modem decoded all twelve on a noiseless link is its own business,
-        // and on a loaded machine it very occasionally does not (issue #12), so the claims here
-        // are about the numbers agreeing rather than about any particular one of them.
-        senderReport.FramesHeard.Should().Be(
-            receiverReport.FramesHeard, "the summary carries the receiver's own count back");
-        senderReport.FramesDelivered.Should().Be(senderReport.FramesHeard, "none was a duplicate");
-        senderReport.FramesLost.Should().Be(12 - senderReport.FramesHeard);
+        senderReport.FramesHeard.Should().Be(12, "the receiver's summary should account for all twelve");
+        senderReport.FramesDelivered.Should().Be(12, "none of the twelve was a duplicate");
+        senderReport.FramesLost.Should().Be(0);
         senderReport.Duplicates.Should().Be(0);
-        senderReport.FramesHeard.Should().BeGreaterThanOrEqualTo(11, "a clean link loses nothing much");
+        senderReport.FrameErrorRate.Should().Be(0);
 
-        receiverReport.FramesLost.Should().Be(12 - receiverReport.FramesHeard);
+        receiverReport.FramesHeard.Should().Be(12, "the receiver's own count should be all twelve");
+        receiverReport.FramesLost.Should().Be(0);
 
         // The modem's own number for this payload size, measured the same way PerfRun does -
         // independent of PerfRun's own measurement, so this is not just checking its arithmetic
