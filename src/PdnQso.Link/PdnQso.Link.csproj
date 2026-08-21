@@ -6,6 +6,9 @@
 
   <ItemGroup>
     <PackageReference Include="pdn-soundmodem" />
+    <!-- Directly, not just through pdn-soundmodem: the Flex power control reads the radio's
+         meters and writes rfpower through this client's own types. AGPL-3.0, same as here. -->
+    <PackageReference Include="M0LTE.Flex" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
   </ItemGroup>
