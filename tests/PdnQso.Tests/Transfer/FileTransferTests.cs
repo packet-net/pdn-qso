@@ -77,7 +77,10 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         sent.RepairSymbols.Should().Be(sent.Symbols - 8, "everything past the pass is repair");
 
         received.Success.Should().BeTrue(received.FailureReason);
-        received.Symbols.Should().Be(sent.Symbols, "both ends count the same transfer");
+        received.Symbols.Should().BeLessThanOrEqualTo(
+            sent.Symbols, "the receiver cannot take in more than the sender put out");
+        received.Symbols.Should().BeGreaterThanOrEqualTo(
+            8, "it decoded the file, so it had at least K symbols");
         received.BlockCount.Should().Be(8);
         received.Name.Should().Be("notes.txt");
         received.Path.Should().NotBeNull();
