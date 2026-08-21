@@ -114,9 +114,16 @@ public sealed class FileReceiver
     /// </remarks>
     private async Task PauseAsync(CancellationToken cancellationToken)
     {
-        if (_arrived.CurrentCount > 0)
+        // Never park with something already in hand. The inbox is the truth about whether there
+        // is work to do; the semaphore is only how a sleeping loop gets woken, and it cannot be
+        // trusted on its own: when the poll wins the race below, the wait that loses is
+        // cancelled, and a permit a sender had just released can be consumed by that abandoned
+        // wait and lost. The frame then sits in the queue with nobody coming back for it until
+        // the next tick. On the real clock that is a wasted poll interval; in a test holding
+        // the clock still while anything says it is busy, it is a deadlock, and it hung a run
+        // for twenty minutes before it was found.
+        if (!_inbox.IsEmpty)
         {
-            await _arrived.WaitAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
 
