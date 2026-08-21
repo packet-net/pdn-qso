@@ -21,6 +21,12 @@ namespace PdnQso.Link.Transfer;
 /// request for a status; different file id, and it is ignored, because this station is busy.
 /// </para>
 /// <para>
+/// A decoded file is written and reported at once, and the receiver then stays on the air
+/// repeating its Done for as long as the sender is still audible rather than for a fixed span;
+/// <see cref="LingerAsync"/> says why, at some length, because the length of that window is
+/// what one lost frame at the end of a transfer costs.
+/// </para>
+/// <para>
 /// <b>Threading.</b> Frames arrive on the station's receive thread and are queued, not acted
 /// on; everything that decodes, writes or transmits happens on the loop inside
 /// <see cref="ReceiveAsync"/>. That matters over a half-duplex link, where answering from
@@ -336,7 +342,7 @@ public sealed class FileReceiver
 
     /// <summary>
     /// Checks the decode against the offered CRC-32, writes the file, says Done, and goes on
-    /// saying Done for a while in case the first one was lost.
+    /// saying Done for as long as the sender is still there in case the first one was lost.
     /// </summary>
     private async Task<FileTransferResult> CompleteAsync(
         DateTimeOffset start, CancellationToken cancellationToken)
@@ -361,6 +367,14 @@ public sealed class FileReceiver
         string path = SafeFileName.UniquePath(_directory, _offer.Name);
         await File.WriteAllBytesAsync(path, content, cancellationToken).ConfigureAwait(false);
 
+        // Said the moment the file is on disc, rather than when the linger below is over. The
+        // linger lasts as long as the far end does, which on a bad link is minutes; a receiver
+        // that sat on the news for that long would be telling its operator about a transfer
+        // that finished a long time ago, and the elapsed time it reported would be mostly
+        // politeness. Nothing after this line changes the result.
+        FileTransferResult result = Result(start, path, reason: null);
+        Completed?.Invoke(result);
+
         if (_station.CanTransmit)
         {
             var done = new FileDonePayload(_offer.FileId, _symbols);
@@ -372,57 +386,113 @@ public sealed class FileReceiver
             await LingerAsync(donePayload, cancellationToken).ConfigureAwait(false);
         }
 
-        return Finish(start, path, reason: null);
+        return result;
     }
 
     /// <summary>
-    /// Goes on answering for <see cref="FileTransferOptions.DoneLinger"/> after the file is on
-    /// disc: a sender whose Done was eaten by the channel is still transmitting, and one more
-    /// Done stops it far sooner than its patience would.
+    /// Goes on answering after the file is on disc, until the sender has been quiet for a whole
+    /// <see cref="FileTransferOptions.Patience"/>: a sender whose Done was eaten by the channel
+    /// is still transmitting, and one more Done stops it far sooner than its own patience
+    /// would.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <b>The window is measured from the last thing heard, not from the first Done.</b> It
+    /// used to be a fixed span, twenty seconds by default, and that is issue #11: what it has
+    /// to cover is a number of the sender's turns rather than a number of seconds. The sender
+    /// can only hear anything at the end of a listen gap, once per status interval, so on a
+    /// link where a frame is a second and an interval is fifteen, twenty seconds is about one
+    /// chance; a channel that eats that too loses the transfer with the file already on disc,
+    /// and the sender spends its whole patience pouring at a station that has finished and
+    /// gone.
+    /// </para>
+    /// <para>
+    /// A fixed number of status intervals - the other shape the issue offered - would still be
+    /// a guess, because the thing it has to survive is the gap between one frame of the
+    /// sender's arriving and the next, and that gap is not a constant. Measured over the
+    /// channel rig at 1200 baud (the ladder in <c>DoneLingerLadderTests</c>): about two status
+    /// intervals on a link losing one frame in fifty, which is the sender's own listening gap
+    /// plus this receiver's answers; three when a quarter are going missing; sixteen and more
+    /// when four in five are. Any span short enough to be reasonable on the good link is far
+    /// too short on the bad one, and the bad one is the only place any of this matters.
+    /// </para>
+    /// <para>
+    /// Silence for a whole patience is the same rule this receiver already applies on the way
+    /// in ("no symbol for that long and the sender has stopped"), and it is the right length by
+    /// construction rather than by choice: the sender's patience is exactly how long it may go
+    /// on pouring. It costs nothing when the sender really has gone, because a station that
+    /// hears nothing transmits nothing, and the operator was told the file had arrived before
+    /// this started.
+    /// </para>
+    /// <para>
+    /// One thing other than silence ends it: an offer belonging to another transfer. A window
+    /// this long would otherwise be a window in which this station is deaf to the next file
+    /// somebody wants to send it, which on a link where two operators are trying things is not
+    /// a theoretical objection.
+    /// </para>
+    /// <para>
     /// Called from inside the loop's own turn, and the turn's <see cref="Busy"/> flag is put
-    /// down for the duration: this is a wait for a stated length of time, and a receiver that
-    /// held itself busy through it would be waiting for a clock that was waiting for the
-    /// receiver. Each round of actual work inside it picks the flag back up.
+    /// down for the duration: waiting to hear whether anyone is still out there is a wait for
+    /// time to pass, and a receiver that held itself busy through it would be waiting for a
+    /// clock that was waiting for the receiver (design.md 6e). Each round of actual work inside
+    /// it picks the flag back up.
+    /// </para>
     /// </remarks>
     private async Task LingerAsync(byte[] donePayload, CancellationToken cancellationToken)
     {
-        if (_options.DoneLinger <= TimeSpan.Zero)
-        {
-            return;
-        }
-
         Interlocked.Decrement(ref _working);
         try
         {
-            DateTimeOffset until = _time.GetUtcNow() + _options.DoneLinger;
-            while (_time.GetUtcNow() < until)
+            DateTimeOffset lastHeard = _time.GetUtcNow();
+            while (_time.GetUtcNow() - lastHeard < _options.Patience)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                bool somebodyElse = false;
                 Interlocked.Increment(ref _working);
                 try
                 {
                     bool askedAgain = false;
                     while (_inbox.TryDequeue(out LinkFrame? frame))
                     {
-                        if (frame.Session == _session
-                            && frame.Type is LinkFrameType.FileSymbol or LinkFrameType.FileOffer)
+                        if (frame.Session == _session)
                         {
-                            askedAgain = true;
+                            askedAgain |=
+                                frame.Type is LinkFrameType.FileSymbol or LinkFrameType.FileOffer;
+                        }
+                        else if (frame.Type == LinkFrameType.FileOffer)
+                        {
+                            // Somebody is offering something else. The file this receiver has
+                            // is on disc and the station that sent it has either heard the Done
+                            // or is about to run out of patience; going on repeating ourselves
+                            // at it while a fresh transfer is being offered would miss the
+                            // fresh one, which is the cost that would otherwise come with a
+                            // window this long.
+                            somebodyElse = true;
                         }
                     }
 
                     if (askedAgain)
                     {
                         await SendOnAirAsync(
-                            _station.Frame(LinkFrameType.FileDone, _session, donePayload), cancellationToken)
+                            _station.Frame(LinkFrameType.FileDone, _session, donePayload),
+                            cancellationToken)
                             .ConfigureAwait(false);
+
+                        // Counted from the end of the answer rather than from the frame that
+                        // prompted it: a half-duplex station hears nothing at all while it is
+                        // transmitting, and charging its own air time to the sender's silence
+                        // is how a link that is busy in both directions comes to look quiet.
+                        lastHeard = _time.GetUtcNow();
                     }
                 }
                 finally
                 {
                     Interlocked.Decrement(ref _working);
+                }
+
+                if (somebodyElse)
+                {
+                    return;
                 }
 
                 await PauseAsync(cancellationToken).ConfigureAwait(false);
@@ -434,23 +504,10 @@ public sealed class FileReceiver
         }
     }
 
+    /// <summary>Builds the result and tells whoever is listening what became of the transfer.</summary>
     private FileTransferResult Finish(DateTimeOffset start, string? path, string? reason)
     {
-        var result = new FileTransferResult
-        {
-            Success = reason is null,
-            Role = FileTransferRole.Receiver,
-            FileId = _offer.FileId,
-            Name = _offer.Name,
-            Length = _offer.Length,
-            BlockCount = _offer.BlockCount,
-            BlockSize = _offer.BlockSize,
-            Symbols = _symbols,
-            Elapsed = _time.GetUtcNow() - start,
-            Path = path,
-            FailureReason = reason,
-        };
-
+        FileTransferResult result = Result(start, path, reason);
         if (reason is null)
         {
             Completed?.Invoke(result);
@@ -462,6 +519,27 @@ public sealed class FileReceiver
 
         return result;
     }
+
+    /// <summary>What the transfer came to, raising nothing.</summary>
+    private FileTransferResult Result(DateTimeOffset start, string? path, string? reason) =>
+        new()
+        {
+            Success = reason is null,
+            Role = FileTransferRole.Receiver,
+            FileId = _offer.FileId,
+            Name = _offer.Name,
+            Length = _offer.Length,
+            BlockCount = _offer.BlockCount,
+            BlockSize = _offer.BlockSize,
+            Symbols = _symbols,
+
+            // The transfer's own time, ending when the file was written: the linger that
+            // follows a success is this station being polite to the far end and is not part of
+            // how long the file took.
+            Elapsed = _time.GetUtcNow() - start,
+            Path = path,
+            FailureReason = reason,
+        };
 
     /// <summary>Queues a frame. Runs on the station's receive thread and does nothing else.</summary>
     private void OnFrameReceived(LinkFrame frame, FrameQuality quality)

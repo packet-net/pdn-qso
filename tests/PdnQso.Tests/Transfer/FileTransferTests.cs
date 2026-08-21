@@ -15,22 +15,18 @@ namespace PdnQso.Tests.Transfer;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The mode is <c>afsk1200-il2p</c>: an ordinary IL2P+CRC packet mode, and one of the cheapest
-/// in the catalogue to simulate at about five milliseconds of CPU per frame, so a whole
-/// transfer runs in the time one 300 baud frame would take to modulate. Nothing here is a
-/// statement about a modem; the claims are all about the protocol.
+/// Both stations, the channel between them and the clock they share are
+/// <see cref="TransferRig"/>. Nothing here is a statement about a modem; the claims are all
+/// about the protocol.
 /// </para>
 /// <para>
-/// Wall-clock intervals are real and short rather than faked. A fake clock cannot drive this:
-/// a burst crosses the hermetic link synchronously on the transmitting thread, so the two ends
-/// have to genuinely take turns, and a clock nobody is advancing while a station is inside a
-/// transmit would stop the other one answering.
+/// Every interval is the clock's rather than the machine's, and transmitting costs its own air
+/// time, so what a claim about patience or a linger means here is what it means on air.
 /// </para>
 /// </remarks>
 /// <param name="output">Where the symbol counts are printed.</param>
 public class FileTransferTests(ITestOutputHelper output) : IDisposable
 {
-    private const string Mode = "afsk1200-il2p";
     private const int BlockSize = 64;
 
     private readonly string _directory = Path.Combine(
@@ -50,7 +46,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task A_File_Crosses_A_Clean_Channel_In_Exactly_K_Symbols()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
         byte[] content = Content(512, seed: 1);
 
         var sender = new FileSender(rig.A, Fast(), idSeed: 4242, timeProvider: rig.Clock);
@@ -92,7 +88,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         // 3 kHz noise bandwidth, and the offers and status frames are eaten along with the
         // symbols, which is the point.
         var channel = new AudioChannel { SnrDb = 4.0, TailSamples = 8000 };
-        await using var rig = Rig.Build(channel);
+        await using var rig = TransferRig.Build(channel);
         byte[] content = Content(1280, seed: 2);
 
         // Patience well past anything this transfer can need. What is measured here is that
@@ -147,7 +143,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task A_File_Whose_Bytes_Do_Not_Match_The_Offered_Crc_Is_Refused_And_Not_Written()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
 
         byte[] content = Content(512, seed: 3);
         byte[] corrupt = (byte[])content.Clone();
@@ -186,7 +182,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task The_Receivers_Status_Frames_Drive_The_Senders_Stop()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
 
         // A station that answers the offer with "I already have all of it". The sender has no
         // business sending the file to somebody who says they have it, and this is what stops
@@ -212,7 +208,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task The_Sender_Gives_Up_When_Nothing_Answers()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
 
         // Two blocks and a patience of fifteen status intervals, so that "more than the
         // systematic pass" is two symbols inside 1.5 s. The first cut asked for more than four
@@ -244,7 +240,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task A_Second_Offer_With_The_Same_File_Id_Does_Not_Restart_The_Transfer()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
 
         byte[] content = Content(384, seed: 6);
         var parameters = new LtParameters { Seed = 0xABCD };
@@ -293,7 +289,11 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         }
 
         // The receiver has its own linger to finish, on the same clock, so it is driven too.
-        FileTransferResult received = await rig.RunAsync(receiving, receiver);
+        // Its window is the patience these options ask for, and a thirty second status interval
+        // makes that seven and a half minutes of the clock's time, so the default budget of
+        // five would run out in the middle of it.
+        FileTransferResult received = await rig.RunAsync(
+            receiving, receiver, budget: options.Patience + TimeSpan.FromMinutes(1));
 
         received.Success.Should().BeTrue(received.FailureReason);
         received.Name.Should().Be("first.bin", "the second offer was ignored");
@@ -310,7 +310,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task An_Offer_The_Receiver_Refuses_Is_Never_Written()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
 
         FileTransferOptions options = Fast() with
         {
@@ -353,7 +353,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task A_Cancelled_Transfer_Stops_At_Both_Ends()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
         using var cancel = new CancellationTokenSource();
 
         var receiver = new FileReceiver(rig.B, _directory, Fast(), timeProvider: rig.Clock);
@@ -375,9 +375,142 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     }
 
     [Fact]
+    public async Task A_Fade_That_Eats_Every_Answer_For_Two_Of_The_Senders_Turns_Costs_Nothing()
+    {
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
+        byte[] content = Content(BlockSize * 4, seed: 21);
+
+        // A sender that pours for a turn and then listens, which is the shape of the shipped
+        // defaults. The fade is two of those turns long: for thirty seconds the sender hears
+        // nothing the receiver says, and the receiver has no way to know that except that the
+        // symbols keep coming.
+        FileTransferOptions options = Fast() with
+        {
+            StatusInterval = TimeSpan.FromSeconds(6),
+            ListenInterval = TimeSpan.FromSeconds(10),
+            OfferInterval = TimeSpan.FromSeconds(30),
+
+            // Patient enough that the sender is still there for a good few turns after the fade
+            // lifts. It is the fade against the linger that is under test, and a sender that
+            // gave up first would be measuring the patience instead.
+            PatienceIntervals = 15,
+        };
+        TimeSpan fade = TimeSpan.FromSeconds(30);
+        await using var deaf = new DeafToDone(rig.A, rig.Clock, fade);
+
+        var sender = new FileSender(deaf, options, idSeed: 23, timeProvider: rig.Clock);
+        var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
+
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
+        FileTransferResult sent = await rig.RunAsync(
+            sender.SendAsync("through-the-fade.bin", content, CancellationToken.None), receiver);
+        FileTransferResult received = await rig.RunAsync(receiving, receiver);
+
+        output.WriteLine(
+            $"{deaf.Eaten} of the receiver's {deaf.Dones} answers went unheard, "
+            + $"and the transfer took {sent.Elapsed.TotalSeconds:0.#} s");
+
+        // How many answers a fade this long swallows is a matter of when the receiver's loop
+        // happens to look at its inbox, so the claim is the shape and not the count: the first
+        // answer went unheard, which is where issue #11 starts, and the receiver was still
+        // answering when the fade lifted, which is what it used not to be.
+        deaf.Eaten.Should().BeGreaterThan(0, "the fade swallowed the first answer");
+        deaf.Dones.Should().BeGreaterThan(
+            deaf.Eaten, "the receiver was still answering when the fade lifted");
+        // A success is a sender that was told, and nothing else: running out of patience is a
+        // failure with a reason attached. How long it took is printed above rather than
+        // asserted, because it depends on where in the sender's turn the fade happened to lift.
+        sent.Success.Should().BeTrue(sent.FailureReason);
+        received.Success.Should().BeTrue(received.FailureReason);
+        File.ReadAllBytes(received.Path!).Should().Equal(content);
+    }
+
+    [Fact]
+    public async Task The_File_Is_Reported_When_It_Is_Written_And_Not_When_The_Linger_Is_Over()
+    {
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
+        FileTransferOptions options = Fast();
+        var sender = new FileSender(rig.A, options, idSeed: 29, timeProvider: rig.Clock);
+        var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
+
+        TimeSpan? decoded = null;
+        receiver.Progress += p =>
+        {
+            if (decoded is null && p.Decoded == p.BlockCount)
+            {
+                decoded = rig.Clock.Elapsed;
+            }
+        };
+
+        TimeSpan? told = null;
+        receiver.Completed += _ => told = rig.Clock.Elapsed;
+
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
+        await rig.RunAsync(
+            sender.SendAsync("prompt.bin", Content(BlockSize * 4, seed: 31), CancellationToken.None),
+            receiver);
+        FileTransferResult received = await rig.RunAsync(receiving, receiver);
+        TimeSpan finished = rig.Clock.Elapsed;
+
+        told.Should().NotBeNull();
+        decoded.Should().NotBeNull();
+        (told!.Value - decoded!.Value).Should().BeLessThan(
+            options.StatusInterval,
+            "the operator hears about the file when it is on disc, not when the far end has "
+            + "finally gone quiet");
+
+        // And the receiver did go on lingering afterwards, which is the whole point of telling
+        // the operator first: on the shipped defaults that is another minute and a half of a
+        // transfer the operator would otherwise think had stalled.
+        (finished - told.Value).Should().BeGreaterThan(options.Patience);
+        received.Elapsed.Should().BeLessThan(
+            finished - options.Patience, "the linger is not part of how long the file took");
+    }
+
+    [Fact]
+    public async Task Another_Station_Offering_A_File_Ends_The_Linger_Rather_Than_Waiting_It_Out()
+    {
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
+        FileTransferOptions options = Fast();
+        var sender = new FileSender(rig.A, options, idSeed: 37, timeProvider: rig.Clock);
+        var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
+
+        TimeSpan? told = null;
+        receiver.Completed += _ => told = rig.Clock.Elapsed;
+
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
+        await rig.RunAsync(
+            sender.SendAsync("first.bin", Content(BlockSize * 4, seed: 41), CancellationToken.None),
+            receiver);
+
+        // The sender heard the Done and stopped, so the receiver is now sitting out its linger.
+        receiving.IsCompleted.Should().BeFalse();
+
+        byte[] next = Content(BlockSize * 2, seed: 43);
+        var another = new LtParameters { Seed = 0x2468 };
+        var encoder = new LtEncoder(next, BlockSize, another);
+        await SendOfferAsync(
+            rig.A,
+            session: 0x63,
+            new FileOfferPayload(
+                0x1234, "next.bin", next.Length, encoder.BlockCount, BlockSize,
+                Crc32.Compute(next), another),
+            CancellationToken.None);
+
+        FileTransferResult received = await rig.RunAsync(receiving, receiver);
+
+        received.Success.Should().BeTrue(received.FailureReason);
+        received.Name.Should().Be("first.bin");
+        told.Should().NotBeNull();
+        (rig.Clock.Elapsed - told!.Value).Should().BeLessThan(
+            options.Patience,
+            "a station with a file to send is not kept waiting while this one repeats itself");
+    }
+
+    [Fact]
     public async Task A_Sender_Refuses_To_Send_Nothing()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
         var sender = new FileSender(rig.A, Fast(), timeProvider: rig.Clock);
 
         Func<Task> send = () => sender.SendAsync("empty.bin", ReadOnlyMemory<byte>.Empty);
@@ -388,7 +521,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     [Fact]
     public async Task A_Receiver_Is_Busy_While_It_Works_Out_What_It_Heard()
     {
-        await using var rig = Rig.Build(AudioChannel.Clean);
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
         FileTransferOptions options = Fast();
         var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
 
@@ -459,13 +592,6 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         OfferInterval = TimeSpan.FromSeconds(4),
         PollInterval = TimeSpan.FromMilliseconds(500),
         PatienceIntervals = 15,
-
-        // Long enough to matter on a link that loses frames. At two seconds, which is under two
-        // frame times here, the receiver got one repeat of its Done and then stopped: on the
-        // lossy channel both copies were eaten about one run in three, and the sender then
-        // poured symbols at a receiver that had finished and gone away until its own patience
-        // ran out. The shipped default is twenty seconds against far longer intervals.
-        DoneLinger = TimeSpan.FromSeconds(30),
     };
 
     private static byte[] Content(int length, int seed)
@@ -491,83 +617,97 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     }
 
     /// <summary>
-    /// Two stations, one shared medium, and the temporary directory received files land in.
+    /// A station that does not hear the far end's Done frames for a while: the fade, or the
+    /// answer that arrived while this station was transmitting and could hear nothing at all.
     /// </summary>
-    private sealed class Rig : IAsyncDisposable
+    /// <remarks>
+    /// It sits between the station and the transfer rather than between the station and the
+    /// air, so the frames are really sent and really cost their air time; what is modelled is
+    /// this end not hearing them, which is what a fade does and what half duplex does.
+    /// </remarks>
+    private sealed class DeafToDone : IStation
     {
-        private AudioLink _link = null!;
-        private Station _a = null!;
-        private Station _b = null!;
-        private HalfDuplexChannel _medium = null!;
+        private readonly IStation _inner;
+        private readonly TimeProvider _time;
+        private readonly TimeSpan _fade;
+        private DateTimeOffset? _first;
 
-        /// <summary>The clock both stations run on.</summary>
-        public VirtualClock Clock { get; } = new();
-
-        /// <summary>True while a burst is in the air.</summary>
-        public bool Carrying => _link.Carrying;
-
-        /// <summary>A number that changes whenever a burst crosses.</summary>
-        public long Crossings => _link.Crossings;
-
-        /// <summary>
-        /// Lets the clock run until a transfer finishes, moving it on only while nothing is
-        /// happening.
-        /// </summary>
-        /// <param name="work">The transfer under test.</param>
-        /// <param name="answering">Whatever owes the other end an answer: a receiver has heard
-        /// frames it has not acted on, and the clock must not be run past that or the sender
-        /// times out against a status that was already on its way.</param>
-        public Task<FileTransferResult> RunAsync(
-            Task<FileTransferResult> work,
-            FileReceiver? answering = null,
-            Func<bool>? alsoBusy = null,
-            TimeSpan? budget = null) =>
-            VirtualTime.RunAsync(
-                Clock,
-                work,
-                () => Carrying || answering?.Busy == true || alsoBusy?.Invoke() == true,
-                budget ?? TimeSpan.FromMinutes(5),
-                progress: () => Crossings);
-
-        /// <summary>The transmitting station, on the shared medium.</summary>
-        public IStation A { get; private set; } = null!;
-
-        /// <summary>The receiving station, on the shared medium.</summary>
-        public IStation B { get; private set; } = null!;
-
-        public static Rig Build(AudioChannel channel)
+        public DeafToDone(IStation inner, TimeProvider time, TimeSpan fade)
         {
-            var rig = new Rig();
-            var link = AudioLink.Create(Mode, channel);
-            var medium = new HalfDuplexChannel();
-            var a = new Station(
-                new StationOptions { Callsign = "M0LTE-7", TxDelayMilliseconds = 100 },
-                link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: rig.Clock);
-            var b = new Station(
-                new StationOptions { Callsign = "G0OLD-3", TxDelayMilliseconds = 100 },
-                link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: rig.Clock);
-            // Transmitting costs what it costs: the clock moves by each burst's own air time.
-            // Without that a sender's patience is unreachable, because pouring symbols on this
-            // rig is free and no amount of it brings a timeout measured in seconds any closer.
-            link.Carried += rig.Clock.Advance;
-
-            a.Start();
-            b.Start();
-            rig._link = link;
-            rig._a = a;
-            rig._b = b;
-            rig._medium = medium;
-            rig.A = medium.Wrap(a);
-            rig.B = medium.Wrap(b);
-            return rig;
+            _inner = inner;
+            _time = time;
+            _fade = fade;
+            _inner.FrameReceived += OnFrame;
         }
 
-        public async ValueTask DisposeAsync()
+        public event Action<LinkFrame, FrameQuality>? FrameReceived;
+
+        public event Action<byte[], FrameQuality>? RawFrameReceived
         {
-            await _a.DisposeAsync();
-            await _b.DisposeAsync();
-            _medium.Dispose();
-            _link.Dispose();
+            add => _inner.RawFrameReceived += value;
+            remove => _inner.RawFrameReceived -= value;
+        }
+
+        public event Action<LinkFrame?, byte[]>? FrameTransmitted
+        {
+            add => _inner.FrameTransmitted += value;
+            remove => _inner.FrameTransmitted -= value;
+        }
+
+        /// <summary>How many Done frames arrived while this station could not hear them.</summary>
+        public int Eaten { get; private set; }
+
+        /// <summary>How many Done frames arrived at all.</summary>
+        public int Dones { get; private set; }
+
+        public string Callsign => _inner.Callsign;
+
+        public string Mode => _inner.Mode;
+
+        public string DeviceName => _inner.DeviceName;
+
+        public bool CanTransmit => _inner.CanTransmit;
+
+        public bool Busy => _inner.Busy;
+
+        public bool Transmitting => _inner.Transmitting;
+
+        public PdnQso.Link.Devices.IPowerControl Power => _inner.Power;
+
+        public IModem Modem => _inner.Modem;
+
+        public void Start() => _inner.Start();
+
+        public LinkFrame Frame(LinkFrameType type, byte session, ReadOnlySpan<byte> payload = default) =>
+            _inner.Frame(type, session, payload);
+
+        public Task SendAsync(LinkFrame frame, CancellationToken cancellationToken = default) =>
+            _inner.SendAsync(frame, cancellationToken);
+
+        public Task SendRawAsync(
+            ReadOnlyMemory<byte> ax25Frame, CancellationToken cancellationToken = default) =>
+            _inner.SendRawAsync(ax25Frame, cancellationToken);
+
+        public ValueTask DisposeAsync()
+        {
+            _inner.FrameReceived -= OnFrame;
+            return ValueTask.CompletedTask;
+        }
+
+        private void OnFrame(LinkFrame frame, FrameQuality quality)
+        {
+            if (frame.Type == LinkFrameType.FileDone)
+            {
+                Dones++;
+                _first ??= _time.GetUtcNow();
+                if (_time.GetUtcNow() - _first.Value < _fade)
+                {
+                    Eaten++;
+                    return;
+                }
+            }
+
+            FrameReceived?.Invoke(frame, quality);
         }
     }
 
