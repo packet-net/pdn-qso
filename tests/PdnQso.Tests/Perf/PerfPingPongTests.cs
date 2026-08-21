@@ -52,7 +52,13 @@ public class PerfPingPongTests
         await VirtualTime.WaitForAsync(() => responderRun.Listening);
 
         var pingerRun = new PerfRun(clock);
-        var options = new PerfPingOptions { PingCount = 5, PingTimeout = TimeSpan.FromSeconds(5) };
+        // Session pinned for the same reason as the stream test: unpinned it is random, it goes
+        // into every frame, and the audio the test puts on the air is then different every run.
+        // Reproducibility, not a cure for anything.
+        var options = new PerfPingOptions
+        {
+            PingCount = 5, PingTimeout = TimeSpan.FromSeconds(5), Session = 0x41,
+        };
 
         // Nothing here needs the clock to move: every ping is answered, so the run finishes on
         // facts alone. The clock is still the test's own, so the timeout cannot fire behind its
@@ -158,7 +164,10 @@ public class PerfPingPongTests
         // was a three second timeout that a busy CI runner beat, and the run then counted two
         // losses instead of one; on this clock the timeout is three seconds of the protocol's
         // time and the machine cannot get in the way of it.
-        var options = new PerfPingOptions { PingCount = 4, PingTimeout = TimeSpan.FromSeconds(3) };
+        var options = new PerfPingOptions
+        {
+            PingCount = 4, PingTimeout = TimeSpan.FromSeconds(3), Session = 0x42,
+        };
         PerfReport report = await VirtualTime.RunAsync(
             clock, pingerRun.RunPingAsync(pinger, options), Busy, progress: () => link.Crossings);
 

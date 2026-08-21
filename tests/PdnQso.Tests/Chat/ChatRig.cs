@@ -1,6 +1,7 @@
 using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Chat;
+using PdnQso.Tests.Rig;
 using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests.Chat;
@@ -18,16 +19,19 @@ namespace PdnQso.Tests.Chat;
 internal sealed class ChatRig : IAsyncDisposable
 {
     private ChatRig(
-        VirtualClock clock, AudioLink link, Station stationA, Station stationB,
-        ChatSession a, ChatSession b)
+        VirtualClock clock, AudioLink link, HalfDuplexChannel medium,
+        Station stationA, Station stationB, ChatSession a, ChatSession b)
     {
         Clock = clock;
+        _medium = medium;
         Link = link;
         StationA = stationA;
         StationB = stationB;
         A = a;
         B = b;
     }
+
+    private readonly HalfDuplexChannel _medium;
 
     /// <summary>The clock both ends run on. Nothing here reads the wall clock.</summary>
     public VirtualClock Clock { get; }
@@ -65,6 +69,11 @@ internal sealed class ChatRig : IAsyncDisposable
     {
         var clock = new VirtualClock();
         AudioLink link = AudioLink.Create(mode, Clean);
+
+        // One medium, as the transfer and perf rigs have. Without it both stations can be
+        // inside the same channel object at once, which is a data race and not a collision,
+        // and an acknowledgement lost to one costs the sender a retry it should not have had.
+        var medium = new HalfDuplexChannel();
         var stationA = new Station(
             Options("M0LTE-7"), link.DeviceA, link.ModemA, gateA ?? OpenBusyGate.Instance,
             timeProvider: clock);
@@ -76,13 +85,16 @@ internal sealed class ChatRig : IAsyncDisposable
 
         ChatOptions a = (optionsA ?? new ChatOptions()) with { SessionId = 0x2A };
         ChatOptions b = (optionsB ?? optionsA ?? new ChatOptions()) with { SessionId = 0x5B };
+        IStation onAir = medium.Wrap(stationA);
+        IStation farEnd = medium.Wrap(stationB);
         return new ChatRig(
             clock,
             link,
+            medium,
             stationA,
             stationB,
-            new ChatSession(stationA, a, timeProvider: clock, random: new Random(11)),
-            new ChatSession(stationB, b, timeProvider: clock, random: new Random(23)));
+            new ChatSession(onAir, a, timeProvider: clock, random: new Random(11)),
+            new ChatSession(farEnd, b, timeProvider: clock, random: new Random(23)));
     }
 
     /// <summary>
@@ -135,6 +147,7 @@ internal sealed class ChatRig : IAsyncDisposable
         await B.DisposeAsync();
         await StationA.DisposeAsync();
         await StationB.DisposeAsync();
+        _medium.Dispose();
         Link.Dispose();
     }
 
