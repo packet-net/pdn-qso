@@ -1,6 +1,7 @@
 using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Perf;
+using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests.Perf;
 
@@ -8,6 +9,12 @@ namespace PdnQso.Tests.Perf;
 /// The stream procedure of docs/design.md section 3: a sender pushes numbered frames at a
 /// receiver, which reports back what it actually heard so the sender's own table is complete.
 /// </summary>
+/// <remarks>
+/// On a <see cref="VirtualClock"/>, and nothing here ever moves it: every frame is answered on
+/// its own account, so the run finishes on facts. Waiting for a fact has no deadline, which is
+/// the point - "the receiver never reported" is a finding, "the receiver did not report inside
+/// ten seconds on this box" is not.
+/// </remarks>
 public class PerfStreamTests
 {
     private const string Mode = "bpsk300";
@@ -21,22 +28,25 @@ public class PerfStreamTests
     [Fact]
     public async Task A_Clean_Stream_Reports_All_Frames_Heard_And_Goodput_Matches_Air_Time()
     {
+        var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
-        await using var sender = new Station(Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
-        await using var receiver = new Station(Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance);
+        await using var sender = new Station(
+            Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
+        await using var receiver = new Station(
+            Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
         sender.Start();
         receiver.Start();
 
-        var senderRun = new PerfRun();
-        var receiverRun = new PerfRun();
+        var senderRun = new PerfRun(clock);
+        var receiverRun = new PerfRun(clock);
         var options = new PerfStreamOptions { FrameCount = 12, PayloadSize = 40 };
 
-        Task<PerfReport> receiverTask = receiverRun.RunStreamReceiverAsync(
-            receiver, new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        Task<PerfReport> receiverTask = receiverRun.RunStreamReceiverAsync(receiver);
         PerfReport senderReport = await senderRun.RunStreamSenderAsync(
-            sender, link.ModemA, link.SampleRate, options,
-            new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+            sender, link.ModemA, link.SampleRate, options);
         PerfReport receiverReport = await receiverTask;
+
+        clock.Elapsed.Should().Be(TimeSpan.Zero, "a clean stream never waits for a timeout");
 
         senderReport.FramesSent.Should().Be(12);
         senderReport.FramesHeard.Should().Be(12);
@@ -66,9 +76,12 @@ public class PerfStreamTests
     [Fact]
     public async Task Lost_Stream_Frames_Are_Counted_As_Gaps_Not_As_Successes()
     {
+        var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
-        await using var sender = new Station(Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
-        await using var receiver = new Station(Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance);
+        await using var sender = new Station(
+            Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
+        await using var receiver = new Station(
+            Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
         sender.Start();
         receiver.Start();
 
@@ -80,9 +93,8 @@ public class PerfStreamTests
             new LinkFrame("M0LTE", LinkFrameType.PerfStream, 1, new byte[payloadSize]).Encode(), 300).Length;
         var lossy = new AudioChannel { Dropouts = [new SampleRange(0, burstSamples)] };
 
-        var receiverRun = new PerfRun();
-        Task<PerfReport> receiverTask = receiverRun.RunStreamReceiverAsync(
-            receiver, new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var receiverRun = new PerfRun(clock);
+        Task<PerfReport> receiverTask = receiverRun.RunStreamReceiverAsync(receiver);
 
         byte session = 0x55;
         for (int i = 0; i < frameCount; i++)

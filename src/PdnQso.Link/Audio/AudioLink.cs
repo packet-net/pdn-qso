@@ -59,6 +59,8 @@ public sealed class AudioLink : IDisposable
     private readonly Endpoint _a;
     private readonly Endpoint _b;
     private readonly Random _noise;
+    private int _carrying;
+    private long _crossings;
     private bool _disposed;
 
     private AudioLink(string mode, int sampleRate, AudioChannel channel, ModemOptions options)
@@ -112,6 +114,21 @@ public sealed class AudioLink : IDisposable
 
     /// <summary>How many samples have crossed the channel, in total.</summary>
     public long SamplesCarried { get; private set; }
+
+    /// <summary>
+    /// True while a burst is crossing the link: modulated, put through the channel and
+    /// demodulated at the far end, all on the transmitting thread.
+    /// </summary>
+    /// <remarks>
+    /// For a test driving this rig on a clock of its own. Time must not be moved on while a
+    /// transmission is in the air, or a timeout waiting for the answer to it can be made to
+    /// fire before the answer has had a chance to exist. It is the one piece of work here long
+    /// enough to matter.
+    /// </remarks>
+    public bool Carrying => Volatile.Read(ref _carrying) > 0;
+
+    /// <summary>How many bursts have crossed. A change means the rig did something.</summary>
+    public long Crossings => Interlocked.Read(ref _crossings);
 
     /// <summary>
     /// Modulates one frame at <paramref name="from"/>, puts it through the channel, and
@@ -168,14 +185,23 @@ public sealed class AudioLink : IDisposable
     /// </summary>
     private void Carry(ReadOnlySpan<float> audio, Endpoint target)
     {
-        float[] through = Channel.Apply(audio, SampleRate, _noise);
-        SamplesCarried += through.Length;
-
-        const int Block = 1024;
-        for (int offset = 0; offset < through.Length; offset += Block)
+        Interlocked.Increment(ref _carrying);
+        try
         {
-            int length = Math.Min(Block, through.Length - offset);
-            target.Deliver(through, offset, length);
+            float[] through = Channel.Apply(audio, SampleRate, _noise);
+            SamplesCarried += through.Length;
+
+            const int Block = 1024;
+            for (int offset = 0; offset < through.Length; offset += Block)
+            {
+                int length = Math.Min(Block, through.Length - offset);
+                target.Deliver(through, offset, length);
+            }
+        }
+        finally
+        {
+            Interlocked.Increment(ref _crossings);
+            Interlocked.Decrement(ref _carrying);
         }
     }
 

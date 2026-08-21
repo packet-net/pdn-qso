@@ -2,6 +2,7 @@ using Packet.SoundModem.Modems;
 using PdnQso.Link.Chat;
 using PdnQso.Tests.Chat;
 using PdnQso.Ui;
+using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests.Ui;
 
@@ -19,7 +20,11 @@ public class ChatTranscriptTests
 {
     private const string FastMode = "qpsk2400";
 
-    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(20);
+    /// <summary>
+    /// The instant every line in these tests is stamped with. Fixed, because a transcript's
+    /// rendering is being checked and the wall clock has no business deciding what it says.
+    /// </summary>
+    private static readonly DateTimeOffset At = VirtualClock.Epoch;
 
     [Fact]
     public async Task A_Line_Sent_Shows_As_Sending_And_Then_As_Delivered_With_Its_Attempts()
@@ -28,7 +33,7 @@ public class ChatTranscriptTests
         var transcript = new ChatTranscript();
         rig.StartAll();
 
-        int ticket = transcript.AddOutgoing(rig.StationA.Callsign, "good evening", DateTimeOffset.Now);
+        int ticket = transcript.AddOutgoing(rig.StationA.Callsign, "good evening", At);
 
         transcript.Rows.Should().ContainSingle();
         transcript.Rows[0].State.Should().Be(ChatRowState.Sending);
@@ -56,8 +61,8 @@ public class ChatTranscriptTests
         var transcript = new ChatTranscript();
         rig.StartAll();
 
-        int ticket = transcript.AddOutgoing(rig.StationA.Callsign, "anyone there", DateTimeOffset.Now);
-        ChatDelivery delivery = await rig.A.SendAsync("anyone there").WaitAsync(Patience);
+        int ticket = transcript.AddOutgoing(rig.StationA.Callsign, "anyone there", At);
+        ChatDelivery delivery = await rig.RunAsync(rig.A.SendAsync("anyone there"));
         transcript.Complete(ticket, delivery);
 
         delivery.IsDelivered.Should().BeFalse();
@@ -127,7 +132,7 @@ public class ChatTranscriptTests
         {
             lock (transcript)
             {
-                return transcript.AddOutgoing(rig.StationA.Callsign, text, DateTimeOffset.Now);
+                return transcript.AddOutgoing(rig.StationA.Callsign, text, At);
             }
         }
     }
@@ -137,7 +142,7 @@ public class ChatTranscriptTests
     {
         var transcript = new ChatTranscript();
 
-        transcript.AddNote("waveform now 7: two retries failed", DateTimeOffset.Now);
+        transcript.AddNote("waveform now 7: two retries failed", At);
 
         transcript.Rows.Should().ContainSingle();
         transcript.Rows[0].State.Should().Be(ChatRowState.Note);
@@ -154,7 +159,7 @@ public class ChatTranscriptTests
             "G0OLD-1", 0x5B, 3, "still here",
             Waveform: 6,
             new FrameQuality("ms110d-wn6", 20, 0, true, SnrDb: 4.2),
-            DateTimeOffset.Now));
+            At));
 
         transcript.Rows[0].Render().Should().Contain("snr 4.2 dB, wf 6");
     }
@@ -164,10 +169,10 @@ public class ChatTranscriptTests
     {
         var transcript = new ChatTranscript(capacity: 3);
 
-        int first = transcript.AddOutgoing("M0LTE", "one", DateTimeOffset.Now);
-        int second = transcript.AddOutgoing("M0LTE", "two", DateTimeOffset.Now);
-        transcript.AddOutgoing("M0LTE", "three", DateTimeOffset.Now);
-        transcript.AddOutgoing("M0LTE", "four", DateTimeOffset.Now);
+        int first = transcript.AddOutgoing("M0LTE", "one", At);
+        int second = transcript.AddOutgoing("M0LTE", "two", At);
+        transcript.AddOutgoing("M0LTE", "three", At);
+        transcript.AddOutgoing("M0LTE", "four", At);
 
         transcript.Rows.Select(r => r.Text).Should().Equal("two", "three", "four");
         transcript.Complete(first, ChatDelivery.Delivered(0, 1, TimeSpan.FromSeconds(1)))
@@ -181,7 +186,7 @@ public class ChatTranscriptTests
     public void Clearing_Drops_The_Transcript_And_Every_Ticket_With_It()
     {
         var transcript = new ChatTranscript();
-        int ticket = transcript.AddOutgoing("M0LTE", "before the restart", DateTimeOffset.Now);
+        int ticket = transcript.AddOutgoing("M0LTE", "before the restart", At);
 
         transcript.Clear();
 

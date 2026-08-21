@@ -2,6 +2,7 @@ using Packet.SoundModem.Modems;
 using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Perf;
+using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests.Perf;
 
@@ -9,6 +10,12 @@ namespace PdnQso.Tests.Perf;
 /// The ping-pong procedure of docs/design.md section 3: a probe answered straight back, timed
 /// per round trip.
 /// </summary>
+/// <remarks>
+/// Every duration here is on a <see cref="VirtualClock"/>. The timeouts are the protocol's own
+/// and are measured in its time, so what this asserts cannot change with the load on the
+/// machine: the run that put this comment here failed on a busy CI runner, at a three second
+/// ping timeout, because a thread-pool hop took longer than that.
+/// </remarks>
 public class PerfPingPongTests
 {
     private const string Mode = "bpsk300";
@@ -22,20 +29,29 @@ public class PerfPingPongTests
     [Fact]
     public async Task Ping_Pong_Reports_Mean_And_Worst_Rtt()
     {
+        var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
-        await using var pinger = new Station(Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
-        await using var responder = new Station(Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance);
+        await using var pinger = new Station(
+            Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
+        await using var responder = new Station(
+            Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
         pinger.Start();
         responder.Start();
 
-        var responderRun = new PerfRun();
+        var responderRun = new PerfRun(clock);
         using var responderCts = new CancellationTokenSource();
         Task responderTask = responderRun.RunPongResponderAsync(responder, responderCts.Token);
 
-        var pingerRun = new PerfRun();
+        var pingerRun = new PerfRun(clock);
         var options = new PerfPingOptions { PingCount = 5, PingTimeout = TimeSpan.FromSeconds(5) };
-        PerfReport report = await pingerRun.RunPingAsync(
-            pinger, options, new CancellationTokenSource(TimeSpan.FromSeconds(20)).Token);
+
+        // Nothing here needs the clock to move: every ping is answered, so the run finishes on
+        // facts alone. The clock is still the test's own, so the timeout cannot fire behind its
+        // back however slow the machine is.
+        Task<PerfReport> run = pingerRun.RunPingAsync(pinger, options);
+        await VirtualTime.WaitForAsync(() => run.IsCompleted);
+        PerfReport report = await run;
+        clock.Elapsed.Should().Be(TimeSpan.Zero, "a clean ping-pong run never has to wait");
 
         responderCts.Cancel();
         await AwaitResponderStop(responderTask);
@@ -55,9 +71,12 @@ public class PerfPingPongTests
     [Fact]
     public async Task A_Dropped_Pong_Counts_As_Lost()
     {
+        var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
-        await using var pinger = new Station(Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
-        await using var responder = new Station(Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance);
+        await using var pinger = new Station(
+            Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
+        await using var responder = new Station(
+            Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
         pinger.Start();
         responder.Start();
 
@@ -72,6 +91,14 @@ public class PerfPingPongTests
         // before the queue was added.
         const int skipSeq = 1;
         var pending = System.Threading.Channels.Channel.CreateUnbounded<LinkFrame>();
+
+        // What the responder owes, counted where the ping is taken rather than where the reply
+        // is made. The clock must not move while a reply is owed, and "owed" has to start the
+        // instant the ping is accepted: a flag raised only once the loop below wakes up leaves
+        // a gap, and the pinger's timeout would be fired inside it. This is the whole reason
+        // the far end's answer cannot be lost to a slow machine any more.
+        int owed = 0;
+
         void OnPing(LinkFrame frame, FrameQuality quality)
         {
             if (frame.Type != LinkFrameType.PerfPing || frame.Payload.Length < 2)
@@ -82,9 +109,11 @@ public class PerfPingPongTests
             ushort seq = (ushort)((frame.Payload.Span[0] << 8) | frame.Payload.Span[1]);
             if (seq == skipSeq)
             {
+                // Owed nothing: this is the ping that is meant to go unanswered.
                 return;
             }
 
+            Interlocked.Increment(ref owed);
             pending.Writer.TryWrite(frame);
         }
 
@@ -94,29 +123,36 @@ public class PerfPingPongTests
         {
             await foreach (LinkFrame ping in pending.Reader.ReadAllAsync(responderCts.Token))
             {
-                await responder.SendAsync(responder.Frame(LinkFrameType.PerfPong, ping.Session, ping.Payload.Span));
+                try
+                {
+                    await responder.SendAsync(
+                        responder.Frame(LinkFrameType.PerfPong, ping.Session, ping.Payload.Span));
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref owed);
+                }
             }
         });
 
-        var pingerRun = new PerfRun();
-        // Generous relative to the RTTs this rig actually produces (comfortably under a
-        // millisecond once warm) - the point being tested is loss counting, not tight timing,
-        // and a background responder's first reply pays real thread-pool and JIT warm-up cost
-        // that a tight timeout would mistake for a second drop.
+        bool Busy() => link.Carrying || Volatile.Read(ref owed) > 0;
+
+        var pingerRun = new PerfRun(clock);
+        // The one unanswered ping is the only thing that may time out. On the wall clock this
+        // was a three second timeout that a busy CI runner beat, and the run then counted two
+        // losses instead of one; on this clock the timeout is three seconds of the protocol's
+        // time and the machine cannot get in the way of it.
         var options = new PerfPingOptions { PingCount = 4, PingTimeout = TimeSpan.FromSeconds(3) };
-        PerfReport report = await pingerRun.RunPingAsync(
-            pinger, options, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+        PerfReport report = await VirtualTime.RunAsync(
+            clock, pingerRun.RunPingAsync(pinger, options), Busy, progress: () => link.Crossings);
 
         responder.FrameReceived -= OnPing;
         responderCts.Cancel();
-        try
-        {
-            await responderLoop.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected: the loop was cancelled to stop it.
-        }
+        await VirtualTime.WaitForAsync(() => responderLoop.IsCompleted);
+
+        clock.Elapsed.Should().Be(
+            options.PingTimeout,
+            "exactly one ping went unanswered, so exactly one timeout was waited out");
 
         report.FramesSent.Should().Be(4);
         report.FramesHeard.Should().Be(3);
@@ -132,6 +168,7 @@ public class PerfPingPongTests
     /// </summary>
     private static async Task AwaitResponderStop(Task responderTask)
     {
-        await responderTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await VirtualTime.WaitForAsync(() => responderTask.IsCompleted);
+        await responderTask;
     }
 }
