@@ -124,7 +124,9 @@ no background check. It
    redirect to a signed URL on another host that carries no tag at all, so the first hop is
    where the version is, and the second hop's URL is the one to download: the bytes fetched are
    the bytes of the release just identified even if another is published in between. No API
-   call, no token, no rate limit;
+   call, no token, no rate limit. GitHub's "latest" is the latest release that is not marked as
+   a prerelease, and `release.yml` marks any version with a hyphen in it (`0.3.0-rc1`) as one,
+   so an rc is published, is downloadable by its own URL, and is never what `--upgrade` offers;
 3. stops if the versions match, and stops if the running copy is ahead (a build from source
    says `1.0.0`, because that is what the SDK stamps when no tag named it);
 4. downloads the package and the release's own `SHA256SUMS` and refuses to install anything

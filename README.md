@@ -41,7 +41,7 @@ pdn-qso --upgrade
 
 That works out which package this machine needs, asks GitHub for the current release, and stops there if you already have it. Otherwise it downloads the package, checks it against the release's own `SHA256SUMS`, and installs it with `apt-get` (through `sudo`, which may ask for your password). Nothing checks for updates on its own and nothing installs anything you did not ask for: a station in the middle of a QSO does not want its program changed underneath it.
 
-If the machine has neither root nor sudo, the download is left in place and the command to run is printed.
+If the machine has neither root nor sudo, the download is left in place and the command to run is printed. Release candidates are published as prereleases, so `--upgrade` never offers you one.
 
 The first run has no config, so it asks four questions and writes the answers to `~/.config/pdn-qso/config.json`:
 
