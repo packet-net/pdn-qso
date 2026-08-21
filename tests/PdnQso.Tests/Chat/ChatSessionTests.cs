@@ -33,11 +33,14 @@ public class ChatSessionTests
 
         // The old assertion here was that the round trip was positive, which on the wall clock
         // only ever meant "some real time went by while the machine did the work". On the
-        // session's own clock it says something real: this rig puts a burst across instantly, so a
-        // line acknowledged first time costs no protocol time at all, and the figure reported
-        // is the one the clock holds rather than a stopwatch reading.
-        result.RoundTrip.Should().Be(rig.Clock.Elapsed);
-        rig.Clock.Elapsed.Should().Be(TimeSpan.Zero, "nothing had to wait for anything");
+        // session's own clock it says something real: this rig puts a burst across instantly,
+        // so a line acknowledged first time costs no protocol time at all, and anything other
+        // than zero here would mean a wait or a retry that this test says did not happen.
+        //
+        // Not compared against the clock's own elapsed time, which is a different number: the
+        // loop driving the clock may move it on once more while it is noticing that the send
+        // has finished, and that says nothing about the round trip the session measured.
+        result.RoundTrip.Should().Be(TimeSpan.Zero);
         lock (heard)
         {
             heard.Should().ContainSingle();

@@ -164,10 +164,30 @@ CI runner in one day; the fix is structural rather than a larger number.
   magnitude quicker, because a block takes about a second at 1200 baud and an interval shorter
   than that is not a test of anything.
 
-Driving this found three defects in the library that the wall clock had been covering: a ping
+**The rig itself must not let the machine vote either.** Two things were found doing this and
+both are properties of the rig rather than of any test:
+
+- `AudioLink` drew its noise from one `Random` shared by both ends and consumed in whatever
+  order the two stations happened to transmit. The lossy transfer test therefore saw a
+  different link every run. Each burst now draws noise seeded by which end sent it and how many
+  that end has sent, so the tenth frame from a station always meets the same noise however the
+  two ends interleave. Counted per direction, so one end's traffic cannot shift the other's.
+- A receiving run is started by a call and is not listening until it has subscribed. On the air
+  the far end is never started by the same keystroke; in a test it is, and the first frame of
+  the run goes to nobody. `PerfRun.Listening` says when it would really hear something.
+
+**What was tried and does not work.** An exact quiescence signal - each party publishing the
+clock time it has caught up with, and counting as busy until it has - deadlocks. An air-time
+advance from the transmitting thread can move the clock between a party observing the time and
+parking on its next timer, and that party then waits for a clock that is waiting for it. The
+margin above (sixteen quiet rounds) is a margin and is described as one.
+
+Driving this found five defects in the library that the wall clock had been covering: a ping
 timeout armed before the frame it timed had been sent, two timeouts whose timers were left
-running after the answer arrived, and a receiver that sat on a queued frame until its next poll
-tick instead of answering when it arrived.
+running after the answer arrived, a receiver that sat on a queued frame until its next poll tick
+instead of answering when it arrived, no way for a caller to know a receiving run had started,
+and (filed as #11 rather than fixed) a finished receiver whose Done frames are all lost going
+quiet while the sender spends its whole patience on it.
 
 ## 7. Phases and agents
 
