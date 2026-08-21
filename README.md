@@ -20,11 +20,28 @@ Everything it sends is an ordinary AX.25 UI frame inside the modem's own framing
 Plug in the CM108 widget, install the package for your architecture, and run it:
 
 ```
-sudo apt install ./pdn-qso_<version>_<arch>.deb
+sudo apt install ./pdn-qso_<arch>.deb
 pdn-qso
 ```
 
+`<arch>` is `amd64`, `arm64` or `armhf`. The packages are on the [latest release](https://github.com/packet-net/pdn-qso/releases/latest), and their names never change, so this is always the current one for a Raspberry Pi:
+
+```
+wget https://github.com/packet-net/pdn-qso/releases/latest/download/pdn-qso_arm64.deb
+sudo apt install ./pdn-qso_arm64.deb
+```
+
 It is a program you run as yourself, not a service. The `.deb` is a self-contained build, so the target needs no .NET runtime.
+
+## Keeping it up to date
+
+```
+pdn-qso --upgrade
+```
+
+That works out which package this machine needs, asks GitHub for the current release, and stops there if you already have it. Otherwise it downloads the package, checks it against the release's own `SHA256SUMS`, and installs it with `apt-get` (through `sudo`, which may ask for your password). Nothing checks for updates on its own and nothing installs anything you did not ask for: a station in the middle of a QSO does not want its program changed underneath it.
+
+If the machine has neither root nor sudo, the download is left in place and the command to run is printed. Release candidates are published as prereleases, so `--upgrade` never offers you one.
 
 The first run has no config, so it asks four questions and writes the answers to `~/.config/pdn-qso/config.json`:
 
@@ -52,6 +69,7 @@ Each activity puts the cursor where you are about to type. In Chat that is the l
 ```
 pdn-qso                                     start on the configured radio
 pdn-qso --monitor-only                      listen and log, never transmit
+pdn-qso --upgrade                           install the current release over this one
 pdn-qso --device flex:discover --mode qpsk2400 --callsign M0LTE-7
 pdn-qso --config /etc/pdn-qso-test.json     a second instance with its own settings
 ```

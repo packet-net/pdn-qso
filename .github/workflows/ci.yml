@@ -59,7 +59,7 @@ jobs:
           # Capture the listing once and match it in memory. Piping dpkg-deb straight into
           # `grep -q` makes grep close the pipe the moment it matches, and the SIGPIPE dpkg-deb
           # takes for that becomes a pipeline failure under pipefail.
-          listing="$(dpkg-deb --contents ./artifacts/pdn-qso_0.0.0-ci_amd64.deb)"
+          listing="$(dpkg-deb --contents ./artifacts/pdn-qso_amd64.deb)"
           grep -q 'usr/lib/pdn-qso/pdn-qso$' <<<"$listing"
           grep -q 'usr/bin/pdn-qso ->' <<<"$listing"
           grep -q 'usr/share/doc/pdn-qso/copyright$' <<<"$listing"

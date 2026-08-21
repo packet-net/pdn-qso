@@ -108,7 +108,7 @@ def main():
         lines.append("")
     # The only line in this script that knows which repository it is in. Everything above
     # is pdn-soundmodem's scripts/release-notes.py verbatim.
-    lines.append("Packages: the `.deb` for amd64, arm64 and armhf is attached; verify downloads against `SHA256SUMS`. Install with `sudo apt install ./pdn-qso_<version>_<arch>.deb`, then run `pdn-qso`.")
+    lines.append("Packages: the `.deb` for amd64, arm64 and armhf is attached; verify downloads against `SHA256SUMS`. Install with `sudo apt install ./pdn-qso_<arch>.deb`, then run `pdn-qso`. An installed copy upgrades itself with `pdn-qso --upgrade`.")
     print("\n".join(lines))
 
 

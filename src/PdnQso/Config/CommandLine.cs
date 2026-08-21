@@ -33,6 +33,9 @@ public sealed record CommandLine
     /// <summary>Print the version and exit.</summary>
     public bool ShowVersion { get; init; }
 
+    /// <summary>Fetch the current release and install it over this one, then exit.</summary>
+    public bool Upgrade { get; init; }
+
     /// <summary>Why the command line was refused, or null when it was not.</summary>
     public string? Error { get; init; }
 
@@ -66,6 +69,9 @@ public sealed record CommandLine
                     break;
                 case "--monitor-only":
                     parsed = parsed with { MonitorOnly = true };
+                    break;
+                case "--upgrade":
+                    parsed = parsed with { Upgrade = true };
                     break;
                 case "--config":
                     if (!TakeValue(args, ref i, name, inlineValue, out string? config, out CommandLine? configFailure))
@@ -135,6 +141,7 @@ public sealed record CommandLine
 
            pdn-qso                     start the terminal UI
            pdn-qso --monitor-only      start it with the transmitter locked out
+           pdn-qso --upgrade           install the current release over this one
            pdn-qso --version           print the version and exit
 
          Options:
@@ -144,6 +151,8 @@ public sealed record CommandLine
            --mode <mode>       a modem mode, e.g. bpsk300, qpsk2400, ms110d-wn13
            --callsign <call>   CALL or CALL-SSID
            --monitor-only      never transmit: listen, show and log only
+           --upgrade           fetch the current release's package for this machine,
+                               check it against the release's checksums and install it
            -h, --help          this
            -V, --version       the version
 
