@@ -1,5 +1,6 @@
 using M0LTE.Flex;
 using PdnQso.Link.Devices;
+using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests;
 
@@ -169,10 +170,13 @@ public class FlexPowerControlTests
     /// </summary>
     private static async Task<PowerReading> WaitForSettingAsync(FlexPowerControl power, double watts)
     {
+        // For as long as it takes, rather than a hundred goes at twenty milliseconds: the radio
+        // answering is a fact, and how many turns the machine needed to get there is not part
+        // of what this asserts.
         PowerReading reading = await power.ReadAsync();
-        for (int attempt = 0; attempt < 100 && reading.Setting != watts; attempt++)
+        while (reading.Setting != watts)
         {
-            await Task.Delay(20);
+            await VirtualTime.YieldAsync();
             reading = await power.ReadAsync();
         }
 
@@ -181,7 +185,7 @@ public class FlexPowerControlTests
 
     private static async Task<PowerReading> WaitForMeasuredAsync(FlexPowerControl power)
     {
-        for (int attempt = 0; attempt < 100; attempt++)
+        while (true)
         {
             PowerReading reading = await power.ReadAsync();
             if (reading.Measured is not null)
@@ -189,9 +193,7 @@ public class FlexPowerControlTests
                 return reading;
             }
 
-            await Task.Delay(20);
+            await VirtualTime.YieldAsync();
         }
-
-        return await power.ReadAsync();
     }
 }

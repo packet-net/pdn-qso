@@ -74,6 +74,12 @@ public static class VirtualTime
     }
 
     /// <summary>
+    /// Hands the machine back to whatever else is runnable, once. For a loop waiting on
+    /// something a real device is doing on its own thread.
+    /// </summary>
+    public static async Task YieldAsync() => await Task.Yield();
+
+    /// <summary>
     /// Runs until <paramref name="done"/> is true, moving the clock on only while nothing at
     /// all is happening.
     /// </summary>

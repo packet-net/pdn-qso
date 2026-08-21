@@ -28,6 +28,16 @@ design doc is binding on layout, protocol and conventions.
 - Tests: xunit v3 + AwesomeAssertions (never FluentAssertions), test names
   `Snake_Case_Like_Sentences`, one test project. Wall-clock through `TimeProvider` only in
   library code; the UI may use the clock directly.
+- **No wall clock in a test, ever.** No `Task.Delay`, no `DateTime.UtcNow`, no
+  `WaitAsync(timeout)`, no `CancellationTokenSource(TimeSpan)`, no "try a hundred times with a
+  20 ms gap". Nothing a test asserts may depend on how busy the machine is. Instead:
+  `VirtualClock` is the `TimeProvider` every station, session, transfer and perf run in a test
+  is given, and `VirtualTime` drives it - `WaitForAsync` for a fact (no deadline: a test that
+  hangs is a finding the runner reports, where "not within five seconds on this box" is not),
+  `RunAsync`/`UntilAsync` to let protocol timeouts fire without waiting for them in real life.
+  A rig subscribing `AudioLink.Carried` to the clock makes transmitting cost its own air time.
+  Anything the clock must not be run past has to say so from the instant the work is taken on:
+  see `AudioLink.Carrying`, `ChatSession.Sending`, `FileReceiver.Busy`.
 - Hot paths (anything per audio block or per symbol): no steady-state allocation, no LINQ.
 - **No em dashes or en dashes anywhere** - code, comments, docs, commit messages, PR bodies.
   Hyphen, comma, semicolon or full stop. Printable strings stay ASCII (`->` not an arrow).

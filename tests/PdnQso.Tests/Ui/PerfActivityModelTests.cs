@@ -3,6 +3,7 @@ using PdnQso.Link.Audio;
 using PdnQso.Link.Devices;
 using PdnQso.Link.Perf;
 using PdnQso.Ui;
+using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests.Ui;
 
@@ -17,6 +18,12 @@ namespace PdnQso.Tests.Ui;
 /// </remarks>
 public class PerfActivityModelTests : IDisposable
 {
+    /// <summary>
+    /// The instant every line in these tests is stamped with. Fixed, because what the
+    /// model renders is being checked and the wall clock has no business deciding it.
+    /// </summary>
+    private static readonly DateTimeOffset At = VirtualClock.Epoch;
+
     private const string Mode = "bpsk300";
 
     private readonly string _directory = Path.Combine(
@@ -36,18 +43,19 @@ public class PerfActivityModelTests : IDisposable
     [Fact]
     public async Task A_Stream_Run_Fills_In_A_Table_At_Both_Ends()
     {
+        var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
         await using var sender = new Station(
-            Options("M0LTE-7"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
+            Options("M0LTE-7"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
         await using var receiver = new Station(
-            Options("G0OLD-1"), link.DeviceB, link.ModemB, OpenBusyGate.Instance);
+            Options("G0OLD-1"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
         sender.Start();
         receiver.Start();
 
         var atSender = new PerfActivityModel { FrameCount = 8, PayloadSize = 40 };
         var atReceiver = new PerfActivityModel();
-        var senderRun = new PerfRun();
-        var receiverRun = new PerfRun();
+        var senderRun = new PerfRun(clock);
+        var receiverRun = new PerfRun(clock);
         Wire(senderRun, atSender);
         Wire(receiverRun, atReceiver);
 
@@ -55,7 +63,7 @@ public class PerfActivityModelTests : IDisposable
         // it, and nobody over there touches a key.
         atReceiver.SetResponder(true);
         Task<PerfReport> receiving = receiverRun.RunStreamReceiverAsync(
-            receiver, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+            receiver, CancellationToken.None);
 
         atSender.StartRun();
         PerfReport report = await senderRun.RunStreamSenderAsync(
@@ -63,7 +71,7 @@ public class PerfActivityModelTests : IDisposable
             sender.Modem,
             link.SampleRate,
             atSender.ToStreamOptions(txDelayMilliseconds: 300, centreHz: 1500),
-            new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+            CancellationToken.None);
         atSender.FinishRun();
         await receiving;
 
@@ -92,19 +100,20 @@ public class PerfActivityModelTests : IDisposable
     [Fact]
     public async Task A_Ping_Run_Fills_In_The_Round_Trip_Rows()
     {
+        var clock = new VirtualClock();
         using AudioLink link = AudioLink.Create(Mode);
         await using var pinger = new Station(
-            Options("M0LTE-7"), link.DeviceA, link.ModemA, OpenBusyGate.Instance);
+            Options("M0LTE-7"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
         await using var responder = new Station(
-            Options("G0OLD-1"), link.DeviceB, link.ModemB, OpenBusyGate.Instance);
+            Options("G0OLD-1"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
         pinger.Start();
         responder.Start();
 
         var model = new PerfActivityModel { Procedure = PerfProcedure.Ping, FrameCount = 3 };
-        var run = new PerfRun();
+        var run = new PerfRun(clock);
         Wire(run, model);
 
-        var responderRun = new PerfRun();
+        var responderRun = new PerfRun(clock);
         using var stopResponder = new CancellationTokenSource();
         Task responding = responderRun.RunPongResponderAsync(responder, stopResponder.Token);
 
@@ -114,11 +123,12 @@ public class PerfActivityModelTests : IDisposable
         PerfReport report = await run.RunPingAsync(
             pinger,
             model.ToPingOptions(centreHz: null),
-            new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
+            CancellationToken.None);
         model.FinishRun();
 
         await stopResponder.CancelAsync();
-        await responding.WaitAsync(TimeSpan.FromSeconds(5));
+        await VirtualTime.WaitForAsync(() => responding.IsCompleted);
+        await responding;
 
         report.FramesHeard.Should().Be(3);
         ShouldHaveRow(model.Table, "procedure", "ping-pong");

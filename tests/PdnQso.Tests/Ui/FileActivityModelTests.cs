@@ -3,6 +3,7 @@ using PdnQso.Link.Audio;
 using PdnQso.Link.Transfer;
 using PdnQso.Tests.Transfer;
 using PdnQso.Ui;
+using PdnQso.Tests.Time;
 
 namespace PdnQso.Tests.Ui;
 
@@ -19,6 +20,12 @@ namespace PdnQso.Tests.Ui;
 /// </remarks>
 public class FileActivityModelTests : IDisposable
 {
+    /// <summary>
+    /// The instant every line in these tests is stamped with. Fixed, because what the
+    /// model renders is being checked and the wall clock has no business deciding it.
+    /// </summary>
+    private static readonly DateTimeOffset At = VirtualClock.Epoch;
+
     private const string Mode = "afsk1200-il2p";
     private const int BlockSize = 64;
 
@@ -39,19 +46,19 @@ public class FileActivityModelTests : IDisposable
     [Fact]
     public async Task A_Transfer_Fills_In_The_Bar_At_Both_Ends_And_Leaves_A_Result_Line()
     {
-        using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var rig = Rig.Build();
         var atSender = new FileActivityModel();
         var atReceiver = new FileActivityModel();
 
-        var sender = new FileSender(rig.A, Options(), idSeed: 4242);
-        var receiver = new FileReceiver(rig.B, _directory, Options());
+        var sender = new FileSender(rig.A, Options(), idSeed: 4242, timeProvider: rig.Clock);
+        var receiver = new FileReceiver(rig.B, _directory, Options(), timeProvider: rig.Clock);
         Wire(sender, atSender);
         Wire(receiver, atReceiver);
 
-        Task<FileTransferResult> receiving = receiver.ReceiveAsync(cancel.Token);
-        FileTransferResult sent = await sender.SendAsync("notes.txt", Content(512), cancel.Token);
-        FileTransferResult received = await receiving;
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
+        FileTransferResult sent = await rig.RunAsync(
+            sender.SendAsync("notes.txt", Content(512), CancellationToken.None), receiver);
+        FileTransferResult received = await rig.RunAsync(receiving, receiver);
 
         sent.Success.Should().BeTrue(sent.FailureReason);
         received.Success.Should().BeTrue(received.FailureReason);
@@ -81,14 +88,13 @@ public class FileActivityModelTests : IDisposable
     [Fact]
     public async Task The_Bar_Moves_With_The_Symbols_As_They_Arrive()
     {
-        using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var rig = Rig.Build();
         var model = new FileActivityModel();
         var fractions = new List<double>();
         var lines = new List<string>();
 
-        var sender = new FileSender(rig.A, Options(), idSeed: 99);
-        var receiver = new FileReceiver(rig.B, _directory, Options());
+        var sender = new FileSender(rig.A, Options(), idSeed: 99, timeProvider: rig.Clock);
+        var receiver = new FileReceiver(rig.B, _directory, Options(), timeProvider: rig.Clock);
         receiver.Progress += progress =>
         {
             lock (model)
@@ -99,9 +105,10 @@ public class FileActivityModelTests : IDisposable
             }
         };
 
-        Task<FileTransferResult> receiving = receiver.ReceiveAsync(cancel.Token);
-        await sender.SendAsync("bar.bin", Content(256), cancel.Token);
-        (await receiving).Success.Should().BeTrue();
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
+        await rig.RunAsync(
+            sender.SendAsync("bar.bin", Content(256), CancellationToken.None), receiver);
+        (await rig.RunAsync(receiving, receiver)).Success.Should().BeTrue();
 
         lock (model)
         {
@@ -116,11 +123,10 @@ public class FileActivityModelTests : IDisposable
     [Fact]
     public async Task An_Offer_Refused_Is_Still_Shown()
     {
-        using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await using var rig = Rig.Build();
         var model = new FileActivityModel();
 
-        var receiver = new FileReceiver(rig.B, _directory, Options())
+        var receiver = new FileReceiver(rig.B, _directory, Options(), timeProvider: rig.Clock)
         {
             AcceptOffer = _ => false,
         };
@@ -128,13 +134,15 @@ public class FileActivityModelTests : IDisposable
         {
             lock (model)
             {
-                model.NoteOffer(offer, accepted, DateTimeOffset.Now);
+                model.NoteOffer(offer, accepted, At);
             }
         };
 
+        using var cancel = new CancellationTokenSource();
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(cancel.Token);
-        var sender = new FileSender(rig.A, Options() with { MaxSymbols = 2 }, idSeed: 7);
-        await sender.SendAsync("unwanted.bin", Content(128), cancel.Token);
+        var sender = new FileSender(rig.A, Options() with { MaxSymbols = 2 }, idSeed: 7, timeProvider: rig.Clock);
+        await rig.RunAsync(
+            sender.SendAsync("unwanted.bin", Content(128), CancellationToken.None), receiver);
 
         (await ChatRigWait(() =>
         {
@@ -187,7 +195,7 @@ public class FileActivityModelTests : IDisposable
         model.Note(new FileProgress(
             1, "gone.bin", FileTransferRole.Receiver, 3, 3, 8, 64, TimeSpan.FromSeconds(2)));
 
-        model.NoteFailure(FileTransferRole.Receiver, "nothing heard for 90 s", DateTimeOffset.Now);
+        model.NoteFailure(FileTransferRole.Receiver, "nothing heard for 90 s", At);
 
         model.Receiving.Should().BeNull();
         model.ReceiveLine.Should().Be("recv: idle");
@@ -201,7 +209,7 @@ public class FileActivityModelTests : IDisposable
         var model = new FileActivityModel();
         model.Note(new FileProgress(1, "a", FileTransferRole.Sender, 1, 0, 4, 64, TimeSpan.FromSeconds(1)));
         model.Note(new FileProgress(2, "b", FileTransferRole.Receiver, 1, 1, 4, 64, TimeSpan.FromSeconds(1)));
-        model.NoteLine("something happened", DateTimeOffset.Now);
+        model.NoteLine("something happened", At);
 
         model.Clear();
 
@@ -215,29 +223,20 @@ public class FileActivityModelTests : IDisposable
     {
         var model = new FileActivityModel(capacity: 2);
 
-        model.NoteLine("one", DateTimeOffset.Now);
-        model.NoteLine("two", DateTimeOffset.Now);
-        model.NoteLine("three", DateTimeOffset.Now);
+        model.NoteLine("one", At);
+        model.NoteLine("two", At);
+        model.NoteLine("three", At);
 
         model.Lines.Should().HaveCount(2);
         model.Lines[0].Should().EndWith("two");
         model.Lines[1].Should().EndWith("three");
     }
 
+    /// <summary>Waits for a fact, for as long as it takes. No deadline, by design.</summary>
     private static async Task<bool> ChatRigWait(Func<bool> condition)
     {
-        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return true;
-            }
-
-            await Task.Delay(5);
-        }
-
-        return condition();
+        await VirtualTime.WaitForAsync(condition);
+        return true;
     }
 
     private static void Wire(FileSender sender, FileActivityModel model)
@@ -253,14 +252,14 @@ public class FileActivityModelTests : IDisposable
         {
             lock (model)
             {
-                model.NoteResult(result, DateTimeOffset.Now);
+                model.NoteResult(result, At);
             }
         };
         sender.Failed += reason =>
         {
             lock (model)
             {
-                model.NoteFailure(FileTransferRole.Sender, reason, DateTimeOffset.Now);
+                model.NoteFailure(FileTransferRole.Sender, reason, At);
             }
         };
     }
@@ -271,7 +270,7 @@ public class FileActivityModelTests : IDisposable
         {
             lock (model)
             {
-                model.NoteOffer(offer, accepted, DateTimeOffset.Now);
+                model.NoteOffer(offer, accepted, At);
             }
         };
         receiver.Progress += progress =>
@@ -285,14 +284,14 @@ public class FileActivityModelTests : IDisposable
         {
             lock (model)
             {
-                model.NoteResult(result, DateTimeOffset.Now);
+                model.NoteResult(result, At);
             }
         };
         receiver.Failed += reason =>
         {
             lock (model)
             {
-                model.NoteFailure(FileTransferRole.Receiver, reason, DateTimeOffset.Now);
+                model.NoteFailure(FileTransferRole.Receiver, reason, At);
             }
         };
     }
@@ -301,15 +300,16 @@ public class FileActivityModelTests : IDisposable
     /// The transfer tests' own fast options: short intervals so a whole transfer runs in a
     /// second or two, and patience long enough that a slow machine is not read as a dead link.
     /// </summary>
+    /// <summary>Intervals scaled to what a frame costs on this link. See the transfer tests.</summary>
     private static FileTransferOptions Options() => new()
     {
         BlockSize = BlockSize,
-        StatusInterval = TimeSpan.FromMilliseconds(200),
-        ListenInterval = TimeSpan.FromMilliseconds(400),
-        OfferInterval = TimeSpan.FromMilliseconds(400),
-        PollInterval = TimeSpan.FromMilliseconds(5),
+        StatusInterval = TimeSpan.FromSeconds(2),
+        ListenInterval = TimeSpan.FromSeconds(2),
+        OfferInterval = TimeSpan.FromSeconds(4),
+        PollInterval = TimeSpan.FromMilliseconds(50),
         PatienceIntervals = 15,
-        DoneLinger = TimeSpan.FromMilliseconds(100),
+        DoneLinger = TimeSpan.FromSeconds(2),
     };
 
     private static byte[] Content(int length)
@@ -328,32 +328,53 @@ public class FileActivityModelTests : IDisposable
         private Station _b = null!;
         private HalfDuplexChannel _medium = null!;
 
+        /// <summary>The clock both stations run on.</summary>
+        public VirtualClock Clock { get; } = new();
+
         public IStation A { get; private set; } = null!;
 
         public IStation B { get; private set; } = null!;
 
+        /// <summary>True while a burst is in the air.</summary>
+        public bool Carrying => _link.Carrying;
+
+        /// <summary>A number that changes whenever a burst crosses.</summary>
+        public long Crossings => _link.Crossings;
+
         public static Rig Build()
         {
+            var rig = new Rig();
             var link = AudioLink.Create(Mode);
             var medium = new HalfDuplexChannel();
+
+            // Transmitting costs its own air time, as in the transfer tests: without that a
+            // sender pours for nothing and no interval measured in seconds ever comes due.
+            link.Carried += rig.Clock.Advance;
             var a = new Station(
                 new StationOptions { Callsign = "M0LTE-7", TxDelayMilliseconds = 100 },
-                link.DeviceA, link.ModemA, OpenBusyGate.Instance);
+                link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: rig.Clock);
             var b = new Station(
                 new StationOptions { Callsign = "G0OLD-3", TxDelayMilliseconds = 100 },
-                link.DeviceB, link.ModemB, OpenBusyGate.Instance);
+                link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: rig.Clock);
             a.Start();
             b.Start();
-            return new Rig
-            {
-                _link = link,
-                _a = a,
-                _b = b,
-                _medium = medium,
-                A = medium.Wrap(a),
-                B = medium.Wrap(b),
-            };
+            rig._link = link;
+            rig._a = a;
+            rig._b = b;
+            rig._medium = medium;
+            rig.A = medium.Wrap(a);
+            rig.B = medium.Wrap(b);
+            return rig;
         }
+
+        /// <summary>Lets the clock run until a transfer finishes.</summary>
+        public Task<FileTransferResult> RunAsync(
+            Task<FileTransferResult> work, FileReceiver? answering = null) =>
+            VirtualTime.RunAsync(
+                Clock,
+                work,
+                () => Carrying || answering?.Busy == true,
+                progress: () => Crossings);
 
         public async ValueTask DisposeAsync()
         {
