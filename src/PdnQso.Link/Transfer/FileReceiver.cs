@@ -35,6 +35,8 @@ public sealed class FileReceiver
     private readonly FileTransferOptions _options;
     private readonly TimeProvider _time;
     private readonly ConcurrentQueue<LinkFrame> _inbox = new();
+    private readonly SemaphoreSlim _arrived = new(0);
+    private int _sending;
 
     private LtDecoder? _decoder;
     private FileOfferPayload _offer;
@@ -69,6 +71,58 @@ public sealed class FileReceiver
     /// is a tool two operators point at each other on purpose.
     /// </summary>
     public Func<FileOfferPayload, bool>? AcceptOffer { get; set; }
+
+    /// <summary>
+    /// True while this receiver has heard something it has not acted on yet, or is putting an
+    /// answer on air.
+    /// </summary>
+    /// <remarks>
+    /// The queue side of this is true from the instant a frame is taken in, which happens
+    /// inside the sender's own transmit. A test driving a clock of its own uses it to know that
+    /// an answer is owed, so it does not move time on and time the sender out against a status
+    /// or a Done that was already on its way.
+    /// </remarks>
+    public bool Busy => !_inbox.IsEmpty || Volatile.Read(ref _sending) > 0;
+
+    /// <summary>
+    /// Waits for the next thing to do: a frame arriving, or the poll interval passing.
+    /// </summary>
+    /// <remarks>
+    /// It was the interval alone, which meant a frame already in the inbox sat there until the
+    /// next tick even though there was nothing to wait for. That is latency for free on the
+    /// air, and worse than that for a test on a clock of its own: "a frame is queued" could
+    /// not be taken to mean "an answer is coming", because the answer needed time to pass
+    /// first, and time was exactly what such a test was holding back.
+    /// </remarks>
+    private async Task PauseAsync(CancellationToken cancellationToken)
+    {
+        if (_arrived.CurrentCount > 0)
+        {
+            await _arrived.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        using var settled = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task woken = _arrived.WaitAsync(settled.Token);
+        Task waited = Task.Delay(_options.PollInterval, _time, settled.Token);
+        await Task.WhenAny(woken, waited).ConfigureAwait(false);
+        await settled.CancelAsync().ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>Puts one frame on air, counted so <see cref="Busy"/> can see it.</summary>
+    private async Task SendOnAirAsync(LinkFrame frame, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _sending);
+        try
+        {
+            await _station.SendAsync(frame, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _sending);
+        }
+    }
 
     /// <summary>Raised for every offer heard, with whether it was accepted.</summary>
     public event Action<FileOfferPayload, bool>? OfferHeard;
@@ -137,8 +191,7 @@ public sealed class FileReceiver
 
                 if (_decoder is null)
                 {
-                    await Task.Delay(_options.PollInterval, _time, cancellationToken)
-                        .ConfigureAwait(false);
+                    await PauseAsync(cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -165,8 +218,7 @@ public sealed class FileReceiver
                     statusAsked = false;
                 }
 
-                await Task.Delay(_options.PollInterval, _time, cancellationToken)
-                    .ConfigureAwait(false);
+                await PauseAsync(cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -249,7 +301,7 @@ public sealed class FileReceiver
         }
 
         var status = new FileStatusPayload(_decoder!.Decoded, _decoder.BlockCount, _symbols);
-        return _station.SendAsync(
+        return SendOnAirAsync(
             _station.Frame(LinkFrameType.FileStatus, _session, status.Encode()), cancellationToken);
     }
 
@@ -284,7 +336,7 @@ public sealed class FileReceiver
         {
             var done = new FileDonePayload(_offer.FileId, _symbols);
             byte[] donePayload = done.Encode();
-            await _station.SendAsync(
+            await SendOnAirAsync(
                 _station.Frame(LinkFrameType.FileDone, _session, donePayload), cancellationToken)
                 .ConfigureAwait(false);
 
@@ -322,12 +374,12 @@ public sealed class FileReceiver
 
             if (askedAgain)
             {
-                await _station.SendAsync(
+                await SendOnAirAsync(
                     _station.Frame(LinkFrameType.FileDone, _session, donePayload), cancellationToken)
                     .ConfigureAwait(false);
             }
 
-            await Task.Delay(_options.PollInterval, _time, cancellationToken).ConfigureAwait(false);
+            await PauseAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -366,6 +418,7 @@ public sealed class FileReceiver
         if (frame.Type is LinkFrameType.FileOffer or LinkFrameType.FileSymbol)
         {
             _inbox.Enqueue(frame);
+            _arrived.Release();
         }
     }
 }

@@ -131,6 +131,19 @@ public sealed class AudioLink : IDisposable
     public long Crossings => Interlocked.Read(ref _crossings);
 
     /// <summary>
+    /// Raised after each burst with the time it occupied on air: its own sample count over the
+    /// link's rate.
+    /// </summary>
+    /// <remarks>
+    /// This rig puts a burst across as fast as the machine can compute it, which is not a
+    /// property of anything real. A test that runs on a clock of its own can subscribe a clock
+    /// to this and get a link where transmitting costs what transmitting costs, which is the
+    /// only way a claim about a station's patience means anything: a sender whose frames are
+    /// free can pour for ever without a timeout it measures in seconds ever coming due.
+    /// </remarks>
+    public event Action<TimeSpan>? Carried;
+
+    /// <summary>
     /// Modulates one frame at <paramref name="from"/>, puts it through the channel, and
     /// returns what the other end decoded.
     /// </summary>
@@ -186,10 +199,12 @@ public sealed class AudioLink : IDisposable
     private void Carry(ReadOnlySpan<float> audio, Endpoint target)
     {
         Interlocked.Increment(ref _carrying);
+        int carried = 0;
         try
         {
             float[] through = Channel.Apply(audio, SampleRate, _noise);
             SamplesCarried += through.Length;
+            carried = through.Length;
 
             const int Block = 1024;
             for (int offset = 0; offset < through.Length; offset += Block)
@@ -202,6 +217,7 @@ public sealed class AudioLink : IDisposable
         {
             Interlocked.Increment(ref _crossings);
             Interlocked.Decrement(ref _carrying);
+            Carried?.Invoke(TimeSpan.FromSeconds((double)carried / SampleRate));
         }
     }
 
