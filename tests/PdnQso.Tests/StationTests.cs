@@ -272,4 +272,15 @@ public class StationTests
         {
         }
     }
+
+    [Fact]
+    public async Task A_Mode_Whose_Modem_Reports_A_Different_Name_Still_Builds_A_Station()
+    {
+        // fsk9600-il2p's modem reports its mode as fsk9600-il2pc, which the catalogue rates
+        // differently, so the rate check must trust the mode the caller asked for.
+        using AudioLink link = AudioLink.Create("fsk9600-il2p");
+        await using var station = Station.Create(Options("M0LTE"), link.DeviceA, "fsk9600-il2p");
+        station.Mode.Should().NotBeNullOrEmpty();
+        link.SampleRate.Should().Be(link.DeviceA.SampleRate);
+    }
 }
