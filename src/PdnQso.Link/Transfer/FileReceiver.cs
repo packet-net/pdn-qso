@@ -16,9 +16,15 @@ namespace PdnQso.Link.Transfer;
 /// </para>
 /// <para>
 /// The receiver reports "decoded n of K" every <see cref="FileTransferOptions.StatusInterval"/>
-/// and immediately whenever the sender re-sends its offer, which is how the sender asks. A
-/// second offer while a transfer is running never restarts it: same file id, and it is a
-/// request for a status; different file id, and it is ignored, because this station is busy.
+/// and whenever the sender re-sends its offer, which is how the sender asks. A second offer
+/// while a transfer is running never restarts it: same file id, and it is a request for a
+/// status; different file id, and it is ignored, because this station is busy.
+/// </para>
+/// <para>
+/// <b>No answer of this station's goes out until the channel has been quiet for a beat.</b>
+/// That is <see cref="AnswerHold"/>, and it applies to a status and to a Done alike: over a
+/// half-duplex link the instant this receiver has something to say is the instant the sender is
+/// transmitting, so an answer made at once is an answer neither station hears (issue #8).
 /// </para>
 /// <para>
 /// A decoded file is written and reported at once, and the receiver then stays on the air
@@ -263,7 +269,7 @@ public sealed class FileReceiver
             DateTimeOffset start = _time.GetUtcNow();
             DateTimeOffset lastStatus = start;
             DateTimeOffset lastSymbol = start;
-            bool statusAsked = false;
+            var status = new AnswerHold(_options, _time);
 
             while (true)
             {
@@ -273,12 +279,15 @@ public sealed class FileReceiver
 
                 while (_inbox.TryDequeue(out LinkFrame? frame))
                 {
+                    // Anything at all off the inbox is proof the channel was in use a moment
+                    // ago, whatever this station's DCD makes of it now.
+                    status.Heard();
                     switch (frame.Type)
                     {
                         case LinkFrameType.FileOffer:
                             if (HandleOffer(frame, ref start, ref lastStatus, ref lastSymbol))
                             {
-                                statusAsked = true;
+                                status.Owe();
                             }
 
                             break;
@@ -316,11 +325,19 @@ public sealed class FileReceiver
                                     $"the sender stopped: no symbol for {(now - lastSymbol).TotalSeconds:0.#} s "
                                     + $"with {_decoder.Decoded} of {_decoder.BlockCount} blocks decoded"));
                         }
-                        else if (statusAsked || now - lastStatus >= _options.StatusInterval)
+                        else
                         {
-                            await SendStatusAsync(cancellationToken).ConfigureAwait(false);
-                            lastStatus = _time.GetUtcNow();
-                            statusAsked = false;
+                            if (now - lastStatus >= _options.StatusInterval)
+                            {
+                                status.Owe();
+                            }
+
+                            if (status.Ready(_station.Busy))
+                            {
+                                await SendStatusAsync(cancellationToken).ConfigureAwait(false);
+                                lastStatus = _time.GetUtcNow();
+                                status.Sent();
+                            }
                         }
                     }
                 }
@@ -455,13 +472,13 @@ public sealed class FileReceiver
 
         if (_station.CanTransmit)
         {
+            // The first Done is the linger's own first turn rather than a send of its own, so
+            // that it waits for the channel exactly as every repeat of it does. Sending it
+            // here instead is issue #8: this is the instant the sender is transmitting the
+            // offer that ends its systematic pass, and neither station hears a word of the
+            // other's.
             var done = new FileDonePayload(_offer.FileId, _symbols);
-            byte[] donePayload = done.Encode();
-            await _station.SendAsync(
-                _station.Frame(LinkFrameType.FileDone, _session, donePayload), cancellationToken)
-                .ConfigureAwait(false);
-
-            await LingerAsync(donePayload, cancellationToken).ConfigureAwait(false);
+            await LingerAsync(done.Encode(), cancellationToken).ConfigureAwait(false);
         }
 
         return result;
@@ -509,6 +526,13 @@ public sealed class FileReceiver
     /// a theoretical objection.
     /// </para>
     /// <para>
+    /// <b>The first Done is this loop's own first turn.</b> It used to be sent from
+    /// <see cref="CompleteAsync"/>, the instant the file was on disc, which is the instant the
+    /// sender is transmitting the offer that ends its systematic pass: issue #8. Sending it
+    /// from here instead means it waits for the channel exactly as every repeat of it does,
+    /// and there is one rule about when this station answers rather than two.
+    /// </para>
+    /// <para>
     /// Called from inside the loop's own turn, and <see cref="Busy"/> stays up for everything
     /// in it except the polls themselves: waiting to hear whether anyone is still out there is
     /// a wait for time to pass, and a receiver that held itself busy through it would be
@@ -518,14 +542,20 @@ public sealed class FileReceiver
     /// </remarks>
     private async Task LingerAsync(byte[] donePayload, CancellationToken cancellationToken)
     {
+        var hold = new AnswerHold(_options, _time);
+        hold.Owe();
+        bool answered = false;
         DateTimeOffset lastHeard = _time.GetUtcNow();
-        while (_time.GetUtcNow() - lastHeard < _options.Patience)
+        while (hold.Owed || _time.GetUtcNow() - lastHeard < _options.Patience)
         {
             cancellationToken.ThrowIfCancellationRequested();
             bool somebodyElse = false;
             bool askedAgain = false;
             while (_inbox.TryDequeue(out LinkFrame? frame))
             {
+                // Anything at all off the inbox is proof the channel was in use a moment ago,
+                // whatever this station's DCD makes of it now.
+                hold.Heard();
                 if (frame.Session == _session)
                 {
                     askedAgain |=
@@ -545,6 +575,18 @@ public sealed class FileReceiver
 
             if (askedAgain)
             {
+                hold.Owe();
+            }
+
+            if (somebodyElse && answered)
+            {
+                // A fresh offer ends this window, but never before the first Done has gone
+                // out: the file is on disc and the station that sent it is owed the news.
+                return;
+            }
+
+            if (hold.Ready(_station.Busy))
+            {
                 await _station.SendAsync(
                     _station.Frame(LinkFrameType.FileDone, _session, donePayload),
                     cancellationToken)
@@ -554,6 +596,8 @@ public sealed class FileReceiver
                 // prompted it: a half-duplex station hears nothing at all while it is
                 // transmitting, and charging its own air time to the sender's silence
                 // is how a link that is busy in both directions comes to look quiet.
+                hold.Sent();
+                answered = true;
                 lastHeard = _time.GetUtcNow();
             }
 
@@ -602,6 +646,99 @@ public sealed class FileReceiver
             Path = path,
             FailureReason = reason,
         };
+
+    /// <summary>
+    /// When an answer this station owes may go on air.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The receiver's two answers - a status, and the Done it repeats - used to go out the
+    /// instant there was something to say, and over a half-duplex link that is the one instant
+    /// they cannot be heard. The sender pours symbols back to back and only stops once per
+    /// status interval, so the moment the receiver has something to say is a moment the sender
+    /// is transmitting: the answer lands inside the sender's own transmission, and each station
+    /// misses the other's frame entirely. That is issue #8, and on the colliding rig it costs a
+    /// clean two-block transfer four times its own air time and eight symbols it did not need.
+    /// </para>
+    /// <para>
+    /// So an answer is <b>owed</b> when there is something to say and <b>ready</b> when the
+    /// channel has been quiet for <see cref="FileTransferOptions.QuietBeforeAnswering"/>. On a
+    /// half-duplex link the only quiet there is is the gap the sender leaves to listen in, so
+    /// waiting for quiet is waiting for the gap, and an answer put into the gap is one the
+    /// sender hears at the first opportunity it had to hear anything. It costs nothing on a
+    /// link where nothing was colliding: the sender could not have heard the answer any sooner
+    /// than the end of its own transmission either way.
+    /// </para>
+    /// <para>
+    /// Quiet is the channel's own <see cref="IStation.Busy"/> - the modem's DCD and its
+    /// in-band energy, which is what a person would look at - and a frame coming off the inbox,
+    /// which is proof the channel was in use whatever the DCD says about it now. The beat has
+    /// to be longer than the sender's own turnaround between two bursts, or the gap between
+    /// them reads as quiet and the answer goes into the next one; a quarter of a second is
+    /// several times a keyed transmitter's rise and settle and is a small fraction of any
+    /// mode's frame time.
+    /// </para>
+    /// <para>
+    /// <b>It gives up after one whole turn of the sender.</b> A channel some third station is
+    /// sitting on is a channel that never reads quiet, and a receiver that waited for it would
+    /// never answer at all; the sender would spend its whole patience pouring at a station that
+    /// had the file. A sender pours for a status interval and then listens for a listen
+    /// interval, so an answer held for both of those together has been offered a gap and has
+    /// not found one, and the channel belongs to somebody else. Past that it goes out and takes
+    /// its chances, which is what it used to do every time.
+    /// </para>
+    /// </remarks>
+    /// <param name="options">Where the beat and the cap come from.</param>
+    /// <param name="time">The clock.</param>
+    private sealed class AnswerHold(FileTransferOptions options, TimeProvider time)
+    {
+        private DateTimeOffset _owedSince;
+        private DateTimeOffset _quietSince = time.GetUtcNow();
+        private bool _owed;
+
+        /// <summary>True while an answer is owed and has not gone out.</summary>
+        public bool Owed => _owed;
+
+        /// <summary>There is something to say. Does nothing if there already was.</summary>
+        public void Owe()
+        {
+            if (!_owed)
+            {
+                _owed = true;
+                _owedSince = time.GetUtcNow();
+            }
+        }
+
+        /// <summary>Something was heard, so the channel was in use at this instant.</summary>
+        public void Heard() => _quietSince = time.GetUtcNow();
+
+        /// <summary>Whether the answer owed may go on air now.</summary>
+        /// <param name="channelBusy">What this station's DCD says.</param>
+        public bool Ready(bool channelBusy)
+        {
+            DateTimeOffset now = time.GetUtcNow();
+            if (channelBusy)
+            {
+                _quietSince = now;
+            }
+
+            if (!_owed)
+            {
+                return false;
+            }
+
+            return now - _quietSince >= options.QuietBeforeAnswering
+                || now - _owedSince >= options.StatusInterval + options.ListenInterval;
+        }
+
+        /// <summary>The answer has gone out, and this station's own burst was the last thing
+        /// on the channel.</summary>
+        public void Sent()
+        {
+            _owed = false;
+            _quietSince = time.GetUtcNow();
+        }
+    }
 
     /// <summary>Queues a frame. Runs on the station's receive thread and does nothing else.</summary>
     private void OnFrameReceived(LinkFrame frame, FrameQuality quality)

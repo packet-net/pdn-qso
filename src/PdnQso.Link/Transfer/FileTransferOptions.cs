@@ -57,6 +57,20 @@ public sealed record FileTransferOptions
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(50);
 
     /// <summary>
+    /// How long the channel has to have been quiet before the receiver puts an answer on air.
+    /// </summary>
+    /// <remarks>
+    /// On a half-duplex link the only quiet there is is the gap the sender leaves to listen in,
+    /// so this is what puts the receiver's status and its Done into that gap instead of into
+    /// the sender's own transmission. It has to be longer than the sender's turnaround between
+    /// two bursts and is otherwise as short as the poll can measure; a quarter of a second is
+    /// several times a keyed transmitter's rise and settle and a small fraction of any mode's
+    /// frame time. Zero answers the instant there is something to say, which is what issue 8
+    /// measured the cost of; <c>FileReceiver.AnswerHold</c> has the numbers.
+    /// </remarks>
+    public TimeSpan QuietBeforeAnswering { get; init; } = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
     /// A hard ceiling on symbols sent, or 0 for none. Patience is the normal stop; this is for
     /// a caller that wants a transfer bounded in air time whatever the other end says.
     /// </summary>
