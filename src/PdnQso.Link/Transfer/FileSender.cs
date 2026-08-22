@@ -48,6 +48,7 @@ public sealed class FileSender
     private uint _fileId;
     private long _lastHeardTicks;
     private int _working;
+    private int _inGap;
     private int _reportedDecoded;
     private int _reportedBlocks;
     private volatile bool _complete;
@@ -105,6 +106,7 @@ public sealed class FileSender
     /// putting one on air.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The counterpart of <see cref="FileReceiver.Busy"/>, and there for the same reason. A
     /// sender spends nearly all of a transfer with something in hand and only one kind of
     /// moment waiting for time to pass, which is the listening gap it leaves for the receiver.
@@ -112,8 +114,18 @@ public sealed class FileSender
     /// runs the receiver's patience on past a station that was about to transmit, and the
     /// receiver then gives up on a sender that had not stopped. The transfer ladder for issue
     /// #11 saw exactly that, on a couple of trials in two hundred.
+    /// </para>
+    /// <para>
+    /// The gap it does put the flag down for ends where its timer fires or where the
+    /// receiver's answer is decoded, and not where this transfer's own loop is next given a
+    /// thread. Those are the same instant on the wall clock and a long way apart on a clock a
+    /// loaded test drives: with the flag coming back up in the continuation, the settle loop
+    /// went on moving time while the sender's next turn sat in the thread pool's queue, by
+    /// eighty seconds of the protocol's time in the worst run seen, until the sender's own
+    /// patience came due against a receiver that was still answering (issue #18).
+    /// </para>
     /// </remarks>
-    public bool Busy => Volatile.Read(ref _working) > 0;
+    public bool Busy => Volatile.Read(ref _working) > 0 && Volatile.Read(ref _inGap) == 0;
 
     /// <summary>Sends a file from disc.</summary>
     /// <param name="path">The file to send.</param>
@@ -150,6 +162,7 @@ public sealed class FileSender
         _session = (byte)_ids.Next(256);
         _fileId = (uint)_ids.Next(int.MinValue, int.MaxValue);
         _complete = false;
+        Volatile.Write(ref _inGap, 0);
         _reportedDecoded = 0;
         _reportedBlocks = encoder.BlockCount;
         _receiverSymbols = 0;
@@ -288,29 +301,68 @@ public sealed class FileSender
     /// Stops transmitting for a while so the receiver can be heard, returning early the moment
     /// it says it is done.
     /// </summary>
+    /// <remarks>
+    /// The gap has a timer of its own rather than a <see cref="Task.Delay(TimeSpan)"/> because
+    /// what <see cref="Busy"/> has to say is "the gap is over", and the only place that is
+    /// known at the instant it happens is the callback. It is disposed on the way out, so a
+    /// timer nobody is waiting on is not left in a test clock's queue moving time along, which
+    /// is the same reason PerfRun's frame wait cancels its own.
+    /// </remarks>
     private async Task ListenAsync(CancellationToken cancellationToken)
     {
-        // Same reason as PerfRun's frame wait: the listening gap's timer is cancelled when the
-        // receiver says it is done, rather than left running with nothing waiting on it. On a
-        // clock a test drives, a timer nobody wants still moves time along.
-        using var over = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task done = _done.Task;
-        Task waited = Task.Delay(_options.ListenInterval, _time, over.Token);
+        var elapsed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using ITimer wake = _time.CreateTimer(
+            _ =>
+            {
+                Volatile.Write(ref _inGap, 0);
+                elapsed.TrySetResult();
+            },
+            state: null,
+            _options.ListenInterval,
+            Timeout.InfiniteTimeSpan);
+        using CancellationTokenRegistration stopped =
+            cancellationToken.Register(static state => ((TaskCompletionSource)state!).TrySetResult(), elapsed);
 
         // The one moment this sender has nothing in hand, so the one moment a test's clock may
-        // move: put the flag down for the gap and pick it up again on the way out.
-        Interlocked.Decrement(ref _working);
+        // move. The flag goes down only once the timer exists, so a gap that is already over
+        // by the time the flag goes down is one this can see and undo rather than one it
+        // races: the callback's own write cannot be the earlier of the two.
+        Volatile.Write(ref _inGap, 1);
+        if (elapsed.Task.IsCompleted || done.IsCompleted)
+        {
+            // Over before it began: the receiver said Done while this station was still
+            // transmitting, or the air time of that last burst moved the clock past the whole
+            // length of the gap. Nothing is being waited for, so nothing may move the clock.
+            Volatile.Write(ref _inGap, 0);
+        }
+
         try
         {
-            await Task.WhenAny(done, waited).ConfigureAwait(false);
+            await Task.WhenAny(done, elapsed.Task).ConfigureAwait(false);
         }
         finally
         {
-            Interlocked.Increment(ref _working);
+            Volatile.Write(ref _inGap, 0);
         }
 
-        await over.CancelAsync().ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>
+    /// The receiver has the file. Called from the receive thread, where the news arrives.
+    /// </summary>
+    /// <remarks>
+    /// The listening gap is over from this instant and not from where the transfer's loop is
+    /// next given a thread, so the flag is put back up here: the rule of design.md 6e, from the
+    /// asking side.
+    /// </remarks>
+    private void Answered()
+    {
+        _complete = true;
+        Volatile.Write(ref _inGap, 0);
+        _done.TrySetResult();
     }
 
     private void Report(FileOfferPayload offer, int sent, DateTimeOffset start) =>
@@ -374,8 +426,7 @@ public sealed class FileSender
                 {
                     // A status saying "K of K" is a Done whose Done was lost. Stopping on it
                     // costs nothing and saves a transfer that would otherwise run to patience.
-                    _complete = true;
-                    _done.TrySetResult();
+                    Answered();
                 }
 
                 break;
@@ -386,8 +437,7 @@ public sealed class FileSender
                 Volatile.Write(ref _lastHeardTicks, _time.GetUtcNow().UtcTicks);
                 Volatile.Write(ref _reportedDecoded, Volatile.Read(ref _reportedBlocks));
                 Volatile.Write(ref _receiverSymbols, done.Symbols);
-                _complete = true;
-                _done.TrySetResult();
+                Answered();
                 break;
 
             default:

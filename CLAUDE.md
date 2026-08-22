@@ -37,7 +37,10 @@ design doc is binding on layout, protocol and conventions.
   `RunAsync`/`UntilAsync` to let protocol timeouts fire without waiting for them in real life.
   A rig subscribing `AudioLink.Carried` to the clock makes transmitting cost its own air time.
   Anything the clock must not be run past has to say so from the instant the work is taken on:
-  see `AudioLink.Carrying`, `ChatSession.Sending`, `FileReceiver.Busy`.
+  see `AudioLink.Carrying`, `ChatSession.Sending`, `FileReceiver.Busy`, `FileSender.Busy`. Raise
+  it where the work falls due, which for a party parked on a timer is that timer's own
+  callback and not the continuation after the await, and hand every one of them to the loop
+  that drives the clock: a flag the settle loop was never given is a flag that does nothing.
 - Hot paths (anything per audio block or per symbol): no steady-state allocation, no LINQ.
 - **No em dashes or en dashes anywhere** - code, comments, docs, commit messages, PR bodies.
   Hyphen, comma, semicolon or full stop. Printable strings stay ASCII (`->` not an arrow).
