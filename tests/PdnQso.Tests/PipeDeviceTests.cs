@@ -125,6 +125,12 @@ public class PipeDeviceTests
         // the burst goes out through the upsampler and comes back through the decimator. The
         // 1:1 test above never touches either of them, and the first hand-run of two copies of
         // the program over a 48 kHz pipe pair heard nothing at all.
+        //
+        // At 48 kHz the burst is also bigger than the FIFO: 83.5 KB of samples against the
+        // kernel's 64 KB, so the writer is always held off mid-burst waiting for the reader
+        // to drain. That open window is what CPU starvation stretches into a shredded burst,
+        // which is why issue #23's hangs, and the legible red that replaced them, land on
+        // this test and never on the 1:1 one, whose burst fits in the FIFO whole.
         string atob = Fifo("fast-atob");
         string btoa = Fifo("fast-btoa");
         int modeRate = ModemCatalog.DspRateFor(Mode);
