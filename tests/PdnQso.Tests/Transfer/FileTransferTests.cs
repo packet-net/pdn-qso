@@ -58,7 +58,8 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
 
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
         FileTransferResult sent = await rig.RunAsync(
-            sender.SendAsync("notes.txt", content, CancellationToken.None), receiver);
+            sender.SendAsync("notes.txt", content, CancellationToken.None), receiver,
+            sending: sender);
         // The receiver has its own linger to finish, on the same clock, so it is driven too.
         FileTransferResult received = await rig.RunAsync(receiving, receiver);
 
@@ -117,7 +118,8 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         TimeSpan budget = TimeSpan.FromMinutes(30);
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
         FileTransferResult sent = await rig.RunAsync(
-            sender.SendAsync("payload.bin", content, CancellationToken.None), receiver, budget: budget);
+            sender.SendAsync("payload.bin", content, CancellationToken.None), receiver,
+            budget: budget, sending: sender);
         // The receiver has its own linger to finish, on the same clock, so it is driven too.
         FileTransferResult received = await rig.RunAsync(receiving, receiver, budget: budget);
 
@@ -193,7 +195,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         var sender = new FileSender(rig.A, Fast(), idSeed: 7, timeProvider: rig.Clock);
         FileTransferResult sent = await rig.RunAsync(
             sender.SendAsync("big.bin", Content(BlockSize * 100, seed: 4), CancellationToken.None),
-            alsoBusy: () => pretend.Busy);
+            alsoBusy: () => pretend.Busy, sending: sender);
 
         sent.Success.Should().BeTrue(sent.FailureReason);
         sent.BlockCount.Should().Be(100);
@@ -223,7 +225,8 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         sender.Failed += reason => failure = reason;
 
         FileTransferResult sent = await rig.RunAsync(
-            sender.SendAsync("into-the-void.bin", Content(BlockSize * 2, seed: 5), CancellationToken.None));
+            sender.SendAsync("into-the-void.bin", Content(BlockSize * 2, seed: 5), CancellationToken.None),
+            sending: sender);
 
         sent.Success.Should().BeFalse();
         sent.FailureReason.Should().Contain("no answer from the receiver");
@@ -335,7 +338,8 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(listen.Token);
         var sender = new FileSender(rig.A, options, idSeed: 13, timeProvider: rig.Clock);
         FileTransferResult sent = await rig.RunAsync(
-            sender.SendAsync("too-big.bin", Content(512, seed: 8), CancellationToken.None), receiver);
+            sender.SendAsync("too-big.bin", Content(512, seed: 8), CancellationToken.None), receiver,
+            sending: sender);
 
         sent.Success.Should().BeFalse("the other end wanted nothing to do with it");
         refused.Should().NotBeEmpty();
@@ -401,9 +405,31 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         var sender = new FileSender(deaf, options, idSeed: 23, timeProvider: rig.Clock);
         var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
 
+        // Every answer the receiver put on air, counted where it left rather than where it
+        // arrived. A count one short at the far end is two findings and not one - the receiver
+        // answered a turn fewer, or it answered and the answer was not counted - and the
+        // assertion below could not tell them apart until this was here (issue #18).
+        int answered = 0;
+        rig.B.FrameTransmitted += (frame, _) =>
+        {
+            if (frame?.Type == LinkFrameType.FileDone)
+            {
+                Interlocked.Increment(ref answered);
+            }
+        };
+
+        // The sender is driven as well as the receiver. It has work in hand for everything but
+        // its listening gap, and a clock moved across the rest of it runs ahead of the station
+        // that is doing the asking: its own patience then comes due while the receiver is
+        // still answering, and the receiver's linger ends because the sender really has been
+        // silent for a whole patience of the clock's time. That is issue #18, and it is not a
+        // small effect - driven with a gap injected after each transmission the clock ran
+        // ninety seconds ahead of a sender mid-turn, and the transfer failed with "no answer
+        // from the receiver for 106 s" and the file already on disc.
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
         FileTransferResult sent = await rig.RunAsync(
-            sender.SendAsync("through-the-fade.bin", content, CancellationToken.None), receiver);
+            sender.SendAsync("through-the-fade.bin", content, CancellationToken.None), receiver,
+            sending: sender);
         FileTransferResult received = await rig.RunAsync(receiving, receiver);
 
         output.WriteLine(
@@ -414,6 +440,10 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         // happens to look at its inbox, so the claim is the shape and not the count: the first
         // answer went unheard, which is where issue #11 starts, and the receiver was still
         // answering when the fade lifted, which is what it used not to be.
+        deaf.Dones.Should().Be(
+            Volatile.Read(ref answered),
+            "this channel loses nothing, so every Done the receiver put on air arrived and was "
+            + "counted");
         deaf.Eaten.Should().BeGreaterThan(0, "the fade swallowed the first answer");
         deaf.Dones.Should().BeGreaterThan(
             deaf.Eaten, "the receiver was still answering when the fade lifted");
@@ -448,7 +478,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
         await rig.RunAsync(
             sender.SendAsync("prompt.bin", Content(BlockSize * 4, seed: 31), CancellationToken.None),
-            receiver);
+            receiver, sending: sender);
         FileTransferResult received = await rig.RunAsync(receiving, receiver);
         TimeSpan finished = rig.Clock.Elapsed;
 
@@ -481,7 +511,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
         await rig.RunAsync(
             sender.SendAsync("first.bin", Content(BlockSize * 4, seed: 41), CancellationToken.None),
-            receiver);
+            receiver, sending: sender);
 
         // The sender heard the Done and stopped, so the receiver is now sitting out its linger.
         receiving.IsCompleted.Should().BeFalse();
@@ -555,6 +585,47 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         }
 
         sender.Busy.Should().BeFalse("the transfer is over and nothing is in hand");
+    }
+
+    [Fact]
+    public async Task A_Sender_Has_Work_In_Hand_Again_The_Moment_Its_Gap_Is_Over()
+    {
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
+
+        // Nobody is listening, so this sender pours its systematic pass and then stops to
+        // listen. Patient enough that the gap is a gap and not the end of the transfer.
+        FileTransferOptions options = Fast() with { PatienceIntervals = 30 };
+        var sender = new FileSender(rig.A, options, idSeed: 47, timeProvider: rig.Clock);
+
+        using var stop = new CancellationTokenSource();
+        Task<FileTransferResult> sending = sender.SendAsync(
+            "gap.bin", Content(BlockSize * 2, seed: 53), stop.Token);
+
+        // The gap is the only moment this sender has nothing in hand, so this is the fact that
+        // it has reached one. Nothing else on the rig holds a timer, so the clock is standing
+        // still by the time this returns.
+        await VirtualTime.WaitForAsync(() => !sender.Busy && !rig.Carrying);
+
+        // Moved by hand, exactly as the settle loop moves it, and read straight afterwards.
+        // The claim is that the gap is over where its timer fires: a flag that waits for the
+        // sender's own loop to be given a thread leaves the clock free to run on across a
+        // station that is about to transmit, and under load it ran on by eighty seconds of the
+        // protocol's time until the sender's patience came due against a receiver that was
+        // still answering (issue #18).
+        //
+        // This states the rule rather than reproducing the failure, and it is worth saying
+        // which: on a quiet box the runtime runs the sender's continuation inline inside the
+        // advance below, so the flag is back up before it is read whichever way it is put back
+        // up, and the shape this replaced passed here too. What caught that shape was the rate
+        // under eight CPU burners, one run in sixty with everything else about the test right,
+        // and a trace of that run showing a ten second gap that lasted forty-eight.
+        rig.Clock.Advance(options.ListenInterval);
+        sender.Busy.Should().BeTrue(
+            "the listening gap ended with the timer, not with the thread pool");
+
+        await stop.CancelAsync();
+        Func<Task> finish = () => sending;
+        await finish.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]

@@ -155,8 +155,29 @@ CI runner in one day; the fix is structural rather than a larger number.
 - **Anything the clock must not be run past has to say so from the instant it takes the work
   on**, not from when its own pump wakes up: `AudioLink.Carrying` (a burst in the air),
   `ChatSession.Sending` (an answer owed, counted where the frame is posted),
-  `FileReceiver.Busy`. A flag raised late leaves a gap, and the gap is where a timeout fires
-  against an answer that was already on its way.
+  `FileReceiver.Busy`, `FileSender.Busy` (work in hand for all of a transfer but the listening
+  gap), `PerfRun.Answered`. A flag raised late leaves a gap, and the gap is where a timeout
+  fires against an answer that was already on its way.
+- **The flag is only half of it: the loop that moves the clock has to be given every party
+  that has one.** Issue #18 was a test that handed the settle loop its receiver and not its
+  sender, so the clock was free to move across everything the sender did between transmissions.
+  It ran eighty seconds ahead of a station that was mid-turn, and the sender's own patience
+  came due against a receiver that was still answering; the receiver then stopped, because from
+  where it stood the sender really had been silent for a whole patience. Under eight CPU
+  burners that was sixteen runs in sixty. The tell is a transfer whose elapsed time is two or
+  three times what the intervals allow for, and the fix is the argument, not a larger patience.
+- **A party that parks on a timer has to raise its flag in the timer's own callback**, not in
+  the continuation that follows the await. Handing the sender to the loop left one run in
+  sixty, with the same tell: a listening gap of ten seconds that the trace showed lasting
+  forty-eight, with the sender's flag down for all of it. The callback runs where the clock is
+  moved, before the loop looks again; the continuation runs whenever the machine next gives
+  the task a thread, and the settle loop meanwhile walks the other end's poll timer half a
+  second at a time for as long as it sits there. None of this shows on a quiet box, because
+  the continuation is then run inline inside the clock's own advance and the flag is back up
+  before the loop can look; under load it is queued instead, and that is the whole difference.
+  `FileSender.ListenAsync` now keeps a timer of its own and puts the flag back up inside it,
+  and the gap also ends where a Done is decoded rather than where the transfer's loop is next
+  scheduled. `FileReceiver.PauseAsync` has the same shape and has not been caught at it.
 - **A test that moves the clock itself is bound by the same rule as the loop that does**, and
   by one more: it may not assume its own handler got there first. A handler subscribed after a
   session's runs second on the same frame, which puts it after the acknowledgement has been

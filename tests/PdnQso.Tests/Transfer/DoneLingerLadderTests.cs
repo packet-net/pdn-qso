@@ -225,9 +225,12 @@ public class DoneLingerLadderTests(ITestOutputHelper output) : IDisposable
         using var stop = new CancellationTokenSource();
         TimeSpan budget = TimeSpan.FromMinutes(30);
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(stop.Token);
+        // The sender is driven as well as the receiver: it has work in hand for everything but
+        // its listening gap, and a clock run across the rest of it races ahead of the station
+        // doing the asking, which is what this ladder measures the cost of (issue #18).
         FileTransferResult sent = await rig.RunAsync(
             sender.SendAsync("payload.bin", Content(BlockSize * 6, trial + 1), stop.Token),
-            receiver, budget: budget).ConfigureAwait(false);
+            receiver, budget: budget, sending: sender).ConfigureAwait(false);
         TimeSpan senderStopped = rig.Clock.Elapsed;
 
         // The receiver may still be lingering, and on a bad enough link it may never have heard
