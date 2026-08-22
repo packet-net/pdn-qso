@@ -697,14 +697,25 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         // is one with something to do: a status is owed the moment it lands, and a clock run
         // past it walks off across an answer the sender's patience is fed by.
         FileTransferOptions options = Fast() with { StatusInterval = TimeSpan.FromMilliseconds(500) };
-        var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
+
+        // The receiver's station can be held: its transmit path waits for the test before a
+        // frame goes on air. Without this the assertion below is a race the test sometimes
+        // loses, and it says nothing about the fix when it does: the tick's turn can drain,
+        // answer and park again between the advance returning and the very next line, and
+        // Busy then reads false because the work is done, not because it was dropped. Under
+        // sixteen burners that was about one sample in twenty, every one of them with the
+        // status already on air. Held, the turn cannot end before the assertion looks,
+        // whichever way the machine schedules it.
+        var held = new HoldableStation(rig.B);
+        var receiver = new FileReceiver(held, _directory, options, timeProvider: rig.Clock);
 
         using var stop = new CancellationTokenSource();
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(stop.Token);
 
         // One offer and one symbol of a two-block file, by hand, so the transfer is mid-flight
         // with the decoder live and the inbox provably empty: the only thing left on the rig
-        // is the receiver's own poll.
+        // is the receiver's own poll. The gate stays open through this, so the offer and the
+        // symbol are answered normally.
         byte[] content = Content(options.BlockSize * 2, seed: 61);
         var encoder = new LtEncoder(content, options.BlockSize, new LtParameters());
         var offer = new FileOfferPayload(
@@ -715,21 +726,28 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
 
         // The poll is the only moment this receiver has nothing in hand, so this is the fact
         // that it has reached one. Nothing else on the rig holds a timer, so the clock is
-        // standing still by the time this returns.
+        // standing still by the time this returns, and the status the last turn sent means a
+        // status falls due again exactly one poll from the park.
         await VirtualTime.WaitForAsync(() => !receiver.Busy && !rig.Carrying);
+        held.Hold();
 
         // Moved by hand, exactly as the settle loop moves it, and read straight afterwards.
         // The claim is that the wait is over where its timer fires: a flag that waits for the
         // receiver's own loop to be given a thread leaves the clock free to run on across a
         // station that is about to answer, and under load it ran on by nearly nine seconds of
-        // the protocol's time in the worst event measured (issue #20). The old shape fails
-        // here whichever way the machine schedules it: run inline, the turn is over and
-        // parked again before the advance returns; queued, the flag is still down when it is
-        // read.
+        // the protocol's time in the worst event measured (issue #20). With the station held,
+        // the fixed shape passes this under every scheduling: the callback has said busy
+        // before the advance returns, and the turn cannot finish and take the flag down
+        // because its answer is waiting on the gate. The old shape still fails here whenever
+        // the machine queues the continuation, which is the case that does the damage; run
+        // inline, its turn blocks at the gate holding its own per-turn flag, and the old
+        // shape passes, as it always did on a quiet box.
         rig.Clock.Advance(options.PollInterval);
         receiver.Busy.Should().BeTrue(
             "the poll ended with the timer, not with the thread pool");
 
+        // Let the held answer go, then stop the transfer.
+        held.Release();
         await stop.CancelAsync();
         Func<Task> finish = () => receiving;
         await finish.Should().ThrowAsync<OperationCanceledException>();
@@ -771,6 +789,86 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         encoder.Symbol(index, body.AsSpan(FileSymbolPayload.HeaderLength));
         return station.SendAsync(
             station.Frame(LinkFrameType.FileSymbol, session, body), cancellationToken);
+    }
+
+    /// <summary>
+    /// A station whose transmit path can be held shut by the test: SendAsync waits at the gate
+    /// until <see cref="Release"/>. Everything else passes straight through. It exists so a
+    /// test can pin a flag while a turn is provably still in flight, instead of racing the
+    /// turn to the assertion.
+    /// </summary>
+    private sealed class HoldableStation(IStation inner) : IStation
+    {
+        private volatile TaskCompletionSource? _held;
+
+        /// <summary>Shuts the gate: the next SendAsync waits until <see cref="Release"/>.</summary>
+        public void Hold() =>
+            _held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Opens the gate and lets anything waiting at it go on air.</summary>
+        public void Release() => _held?.TrySetResult();
+
+        public event Action<LinkFrame, FrameQuality>? FrameReceived
+        {
+            add => inner.FrameReceived += value;
+            remove => inner.FrameReceived -= value;
+        }
+
+        public event Action<byte[], FrameQuality>? RawFrameReceived
+        {
+            add => inner.RawFrameReceived += value;
+            remove => inner.RawFrameReceived -= value;
+        }
+
+        public event Action<LinkFrame?, byte[]>? FrameTransmitted
+        {
+            add => inner.FrameTransmitted += value;
+            remove => inner.FrameTransmitted -= value;
+        }
+
+        public string Callsign => inner.Callsign;
+
+        public string Mode => inner.Mode;
+
+        public string DeviceName => inner.DeviceName;
+
+        public bool CanTransmit => inner.CanTransmit;
+
+        public bool Busy => inner.Busy;
+
+        public bool Transmitting => inner.Transmitting;
+
+        public PdnQso.Link.Devices.IPowerControl Power => inner.Power;
+
+        public IModem Modem => inner.Modem;
+
+        public void Start() => inner.Start();
+
+        public LinkFrame Frame(LinkFrameType type, byte session, ReadOnlySpan<byte> payload = default) =>
+            inner.Frame(type, session, payload);
+
+        public async Task SendAsync(LinkFrame frame, CancellationToken cancellationToken = default)
+        {
+            if (_held is { } gate)
+            {
+                await gate.Task.ConfigureAwait(false);
+            }
+
+            await inner.SendAsync(frame, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task SendRawAsync(
+            ReadOnlyMemory<byte> ax25Frame, CancellationToken cancellationToken = default)
+        {
+            if (_held is { } gate)
+            {
+                await gate.Task.ConfigureAwait(false);
+            }
+
+            await inner.SendRawAsync(ax25Frame, cancellationToken).ConfigureAwait(false);
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     /// <summary>
