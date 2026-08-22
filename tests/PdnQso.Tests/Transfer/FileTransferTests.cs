@@ -759,6 +759,95 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     /// of hundred milliseconds would have the sender giving up before its first symbol landed.
     /// These are the same shape as the shipped defaults, an order of magnitude quicker.
     /// </summary>
+    /// <summary>
+    /// Issue #8: a clean transfer over a medium where two stations on air at once lose both
+    /// frames still costs exactly the file, and the first Done the receiver sends is one the
+    /// sender hears.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the one transfer test the queueing medium cannot make.</b> Everything else
+    /// here runs over a medium where a station that wants the channel while the other has it
+    /// waits its turn and is then heard; there is no such thing as a collision on it, so a
+    /// receiver that answers into the sender's own transmission looks exactly like one that
+    /// answered into silence. Scaling the intervals down does not help either, because
+    /// <c>Fast</c> scales the collision window and the recovery window together and the
+    /// transfer still closes inside the test's patience. Built to collide, the same rig prices
+    /// the fault: on this file, answering the instant there is something to say cost thirty
+    /// seconds of air and twelve symbols against six seconds and two.
+    /// </para>
+    /// <para>
+    /// What each assertion is for. <b>No repair</b> says nothing was lost, and a symbol that
+    /// went out while the receiver was transmitting over it is lost as surely as one the
+    /// channel ate. <b>One Done</b> says the first one was heard, which is the whole of the
+    /// issue: every further one is a turn of the sender's spent pouring at a station that had
+    /// finished. <b>The air budget</b> says the transfer did not have to wait for a second
+    /// listening gap to close.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task A_Clean_Transfer_Costs_Only_Its_Own_Air_When_The_Medium_Collides()
+    {
+        await using var rig = TransferRig.Build(AudioChannel.Clean, colliding: true);
+        byte[] content = Content(BlockSize * 2, seed: 8);
+        FileTransferOptions options = Fast();
+
+        var sender = new FileSender(rig.A, options, idSeed: 8, timeProvider: rig.Clock);
+        var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
+        rig.WorkInHand(() => sender.Busy, () => receiver.Busy);
+
+        int donesOnAir = 0;
+        rig.B.FrameTransmitted += (frame, _) =>
+        {
+            if (frame?.Type == LinkFrameType.FileDone)
+            {
+                donesOnAir++;
+            }
+        };
+
+        // Both moments are read where they happen rather than where this test is next given a
+        // thread: the settle loop can walk the clock on across a poll or two between a
+        // transfer ending and the await returning, and that would be charged to the protocol.
+        TimeSpan? decodedAt = null;
+        receiver.Completed += _ => decodedAt ??= rig.Clock.Elapsed;
+        TimeSpan? senderStopped = null;
+        sender.Completed += _ => senderStopped ??= rig.Clock.Elapsed;
+
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
+        FileTransferResult sent = await rig.RunAsync(
+            sender.SendAsync("hello.bin", content, CancellationToken.None), receiver,
+            sending: sender);
+        FileTransferResult received = await rig.RunAsync(receiving, receiver);
+
+        TimeSpan wasted = senderStopped!.Value - decodedAt!.Value;
+        output.WriteLine(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{sent.Symbols} symbols and {donesOnAir} Done frames in "
+            + $"{sent.Elapsed.TotalSeconds:0.0} s of air, of which {wasted.TotalSeconds:0.0} s "
+            + $"after the receiver had the file"));
+
+        sent.Success.Should().BeTrue(sent.FailureReason);
+        received.Success.Should().BeTrue(received.FailureReason);
+        File.ReadAllBytes(received.Path!).Should().Equal(content);
+
+        sent.RepairSymbols.Should().Be(
+            0,
+            "nothing was lost on a clean link, and a symbol the receiver transmitted over is "
+            + "lost as surely as one the channel ate");
+        donesOnAir.Should().Be(
+            1,
+            "the sender heard the receiver's first Done, so there was never a second to send");
+
+        // One turn of a sender is a status interval of pouring and a listening gap. A receiver
+        // whose Done lands in the gap costs it the transmission it was already making and no
+        // more; one whose Done is talked over costs it another whole turn, and that is the
+        // seventeen and a half seconds of the issue.
+        wasted.Should().BeLessThan(
+            options.StatusInterval + options.ListenInterval,
+            "the sender learned inside the transmission it was already making and the gap it "
+            + "was already going to leave, rather than on its next turn");
+    }
+
     private static FileTransferOptions Fast() => new()
     {
         BlockSize = BlockSize,

@@ -48,11 +48,16 @@ internal sealed class TransferRig : IAsyncDisposable
 
     /// <summary>Builds the rig over one channel.</summary>
     /// <param name="channel">What happens to a burst between the two stations.</param>
-    public static TransferRig Build(AudioChannel channel)
+    /// <param name="colliding">Whether two stations on air at once lose both frames, which is
+    /// what a half-duplex pair really does, or merely queue behind each other, which is all a
+    /// test needs when nothing under it is about to answer into somebody else's transmission.
+    /// A colliding rig has to be told what has work in hand at each end: see
+    /// <see cref="WorkInHand"/>.</param>
+    public static TransferRig Build(AudioChannel channel, bool colliding = false)
     {
         var rig = new TransferRig();
         var link = AudioLink.Create(Mode, channel);
-        var medium = new HalfDuplexChannel();
+        var medium = new HalfDuplexChannel(colliding);
         var a = new Station(
             new StationOptions { Callsign = "M0LTE-7", TxDelayMilliseconds = 100 },
             link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: rig.Clock);
@@ -71,6 +76,19 @@ internal sealed class TransferRig : IAsyncDisposable
         rig.B = medium.Wrap(b);
         return rig;
     }
+
+    /// <summary>
+    /// Tells a colliding medium what has work in hand at each end, so that a burst does not
+    /// begin while the far station is still deciding whether to answer into it.
+    /// </summary>
+    /// <remarks>
+    /// The same flags <see cref="RunAsync"/> hands the clock's settle loop, and for the same
+    /// reason: two stations keying up at one instant of the protocol's time is a fact about
+    /// the protocol, and which of the two threads the machine schedules first is not.
+    /// </remarks>
+    /// <param name="a">The A end's party, usually <c>FileSender.Busy</c>.</param>
+    /// <param name="b">The B end's party, usually <c>FileReceiver.Busy</c>.</param>
+    public void WorkInHand(Func<bool> a, Func<bool> b) => _medium.WorkInHand(a, b);
 
     /// <summary>
     /// Lets the clock run until a transfer finishes, moving it on only while nothing is
