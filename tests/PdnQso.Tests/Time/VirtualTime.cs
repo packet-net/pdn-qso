@@ -50,6 +50,7 @@ public static class VirtualTime
     /// </remarks>
     private const int StillRounds = 16;
 
+
     /// <summary>
     /// Waits for something to become true, for as long as it takes.
     /// </summary>

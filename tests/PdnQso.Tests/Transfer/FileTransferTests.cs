@@ -519,6 +519,45 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
     }
 
     [Fact]
+    public async Task A_Sender_Is_Busy_Except_In_The_Gap_It_Leaves_For_The_Receiver()
+    {
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
+        FileTransferOptions options = Fast();
+        var sender = new FileSender(rig.A, options, idSeed: 31, timeProvider: rig.Clock);
+        var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
+
+        // Read from inside the sender's own progress event, which is raised once a symbol has
+        // gone on air and before the next decision is made. The sender has work in hand at
+        // that moment: it has not reached its listening gap, and a clock run past it gives the
+        // far end's patience a head start on a station that is about to transmit again.
+        var busyWhileSending = new List<bool>();
+        sender.Progress += _ =>
+        {
+            lock (busyWhileSending)
+            {
+                busyWhileSending.Add(sender.Busy);
+            }
+        };
+
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
+        FileTransferResult sent = await rig.RunAsync(
+            sender.SendAsync("busy.bin", Content(512, seed: 31), CancellationToken.None),
+            receiver,
+            sending: sender);
+        await rig.RunAsync(receiving, receiver);
+
+        sent.Success.Should().BeTrue(sent.FailureReason);
+        lock (busyWhileSending)
+        {
+            busyWhileSending.Should().NotBeEmpty();
+            busyWhileSending.Should().AllBeEquivalentTo(
+                true, "a sender between symbols has not finished, it is deciding what to send next");
+        }
+
+        sender.Busy.Should().BeFalse("the transfer is over and nothing is in hand");
+    }
+
+    [Fact]
     public async Task A_Receiver_Is_Busy_While_It_Works_Out_What_It_Heard()
     {
         await using var rig = TransferRig.Build(AudioChannel.Clean);

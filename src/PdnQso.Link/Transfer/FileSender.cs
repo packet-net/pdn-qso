@@ -47,6 +47,7 @@ public sealed class FileSender
     private byte _session;
     private uint _fileId;
     private long _lastHeardTicks;
+    private int _working;
     private int _reportedDecoded;
     private int _reportedBlocks;
     private volatile bool _complete;
@@ -99,6 +100,21 @@ public sealed class FileSender
     /// </summary>
     public int ReceiverSymbols => Volatile.Read(ref _receiverSymbols);
 
+    /// <summary>
+    /// True while this sender has work in hand: deciding what to do next, coding a symbol, or
+    /// putting one on air.
+    /// </summary>
+    /// <remarks>
+    /// The counterpart of <see cref="FileReceiver.Busy"/>, and there for the same reason. A
+    /// sender spends nearly all of a transfer with something in hand and only one kind of
+    /// moment waiting for time to pass, which is the listening gap it leaves for the receiver.
+    /// A test driving a clock of its own must not move time across the rest of it: doing so
+    /// runs the receiver's patience on past a station that was about to transmit, and the
+    /// receiver then gives up on a sender that had not stopped. The transfer ladder for issue
+    /// #11 saw exactly that, on a couple of trials in two hundred.
+    /// </remarks>
+    public bool Busy => Volatile.Read(ref _working) > 0;
+
     /// <summary>Sends a file from disc.</summary>
     /// <param name="path">The file to send.</param>
     /// <param name="cancellationToken">Stops the transfer.</param>
@@ -148,6 +164,10 @@ public sealed class FileSender
         Volatile.Write(ref _lastHeardTicks, start.UtcTicks);
 
         _station.FrameReceived += OnFrameReceived;
+
+        // Work in hand for the whole run: see Busy. The listening gap puts it down for as long
+        // as it waits, which is the only moment this sender is not doing something.
+        Interlocked.Increment(ref _working);
         try
         {
             return await RunAsync(offer, offerPayload, encoder, start, cancellationToken)
@@ -155,6 +175,7 @@ public sealed class FileSender
         }
         finally
         {
+            Interlocked.Decrement(ref _working);
             _station.FrameReceived -= OnFrameReceived;
         }
     }
@@ -275,7 +296,19 @@ public sealed class FileSender
         using var over = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task done = _done.Task;
         Task waited = Task.Delay(_options.ListenInterval, _time, over.Token);
-        await Task.WhenAny(done, waited).ConfigureAwait(false);
+
+        // The one moment this sender has nothing in hand, so the one moment a test's clock may
+        // move: put the flag down for the gap and pick it up again on the way out.
+        Interlocked.Decrement(ref _working);
+        try
+        {
+            await Task.WhenAny(done, waited).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Increment(ref _working);
+        }
+
         await over.CancelAsync().ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
     }
