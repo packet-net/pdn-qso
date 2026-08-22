@@ -58,7 +58,8 @@ public class FileActivityModelTests : IDisposable
 
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
         FileTransferResult sent = await rig.RunAsync(
-            sender.SendAsync("notes.txt", Content(512), CancellationToken.None), receiver);
+            sender.SendAsync("notes.txt", Content(512), CancellationToken.None), receiver,
+            sending: sender);
         FileTransferResult received = await rig.RunAsync(receiving, receiver);
 
         sent.Success.Should().BeTrue(sent.FailureReason);
@@ -108,7 +109,8 @@ public class FileActivityModelTests : IDisposable
 
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(CancellationToken.None);
         await rig.RunAsync(
-            sender.SendAsync("bar.bin", Content(256), CancellationToken.None), receiver);
+            sender.SendAsync("bar.bin", Content(256), CancellationToken.None), receiver,
+            sending: sender);
         (await rig.RunAsync(receiving, receiver)).Success.Should().BeTrue();
 
         lock (model)
@@ -143,7 +145,8 @@ public class FileActivityModelTests : IDisposable
         Task<FileTransferResult> receiving = receiver.ReceiveAsync(cancel.Token);
         var sender = new FileSender(rig.A, Options() with { MaxSymbols = 2 }, idSeed: 7, timeProvider: rig.Clock);
         await rig.RunAsync(
-            sender.SendAsync("unwanted.bin", Content(128), CancellationToken.None), receiver);
+            sender.SendAsync("unwanted.bin", Content(128), CancellationToken.None), receiver,
+            sending: sender);
 
         (await ChatRigWait(() =>
         {
@@ -368,12 +371,20 @@ public class FileActivityModelTests : IDisposable
         }
 
         /// <summary>Lets the clock run until a transfer finishes.</summary>
+        /// <remarks>
+        /// The sender is handed to the loop as well as the receiver, for issue #18's reason:
+        /// a sender has work in hand for everything but its listening gap, and a clock moved
+        /// across the rest of it times the receiver's patience against a station that was
+        /// about to transmit. A flag the settle loop was never given does nothing.
+        /// </remarks>
         public Task<FileTransferResult> RunAsync(
-            Task<FileTransferResult> work, FileReceiver? answering = null) =>
+            Task<FileTransferResult> work,
+            FileReceiver? answering = null,
+            FileSender? sending = null) =>
             VirtualTime.RunAsync(
                 Clock,
                 work,
-                () => Carrying || answering?.Busy == true,
+                () => Carrying || answering?.Busy == true || sending?.Busy == true,
                 progress: () => Crossings);
 
         public async ValueTask DisposeAsync()

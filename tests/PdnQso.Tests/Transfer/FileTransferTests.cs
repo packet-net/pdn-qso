@@ -688,6 +688,53 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         await finish.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    [Fact]
+    public async Task A_Receiver_Has_Work_In_Hand_Again_The_Moment_Its_Poll_Comes_Due()
+    {
+        await using var rig = TransferRig.Build(AudioChannel.Clean);
+
+        // A status interval the length of the poll, so that the tick this test fires by hand
+        // is one with something to do: a status is owed the moment it lands, and a clock run
+        // past it walks off across an answer the sender's patience is fed by.
+        FileTransferOptions options = Fast() with { StatusInterval = TimeSpan.FromMilliseconds(500) };
+        var receiver = new FileReceiver(rig.B, _directory, options, timeProvider: rig.Clock);
+
+        using var stop = new CancellationTokenSource();
+        Task<FileTransferResult> receiving = receiver.ReceiveAsync(stop.Token);
+
+        // One offer and one symbol of a two-block file, by hand, so the transfer is mid-flight
+        // with the decoder live and the inbox provably empty: the only thing left on the rig
+        // is the receiver's own poll.
+        byte[] content = Content(options.BlockSize * 2, seed: 61);
+        var encoder = new LtEncoder(content, options.BlockSize, new LtParameters());
+        var offer = new FileOfferPayload(
+            0x0D15EA5E, "half.bin", content.Length, encoder.BlockCount, encoder.BlockSize,
+            Crc32.Compute(content), encoder.Parameters);
+        await rig.A.SendAsync(rig.A.Frame(LinkFrameType.FileOffer, session: 0x2E, offer.Encode()));
+        await SendSymbolAsync(rig.A, session: 0x2E, encoder, 0, CancellationToken.None);
+
+        // The poll is the only moment this receiver has nothing in hand, so this is the fact
+        // that it has reached one. Nothing else on the rig holds a timer, so the clock is
+        // standing still by the time this returns.
+        await VirtualTime.WaitForAsync(() => !receiver.Busy && !rig.Carrying);
+
+        // Moved by hand, exactly as the settle loop moves it, and read straight afterwards.
+        // The claim is that the wait is over where its timer fires: a flag that waits for the
+        // receiver's own loop to be given a thread leaves the clock free to run on across a
+        // station that is about to answer, and under load it ran on by nearly nine seconds of
+        // the protocol's time in the worst event measured (issue #20). The old shape fails
+        // here whichever way the machine schedules it: run inline, the turn is over and
+        // parked again before the advance returns; queued, the flag is still down when it is
+        // read.
+        rig.Clock.Advance(options.PollInterval);
+        receiver.Busy.Should().BeTrue(
+            "the poll ended with the timer, not with the thread pool");
+
+        await stop.CancelAsync();
+        Func<Task> finish = () => receiving;
+        await finish.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     /// <summary>
     /// Intervals scaled to what this link actually costs. A frame of one block takes about a
     /// second on air at 1200 baud, and the rig now charges for that, so an interval of a couple
