@@ -3,7 +3,7 @@
     <!-- The modems, the framing, the audio devices and the frame quality this tool measures
          with. GPL-3.0-or-later; this repo is AGPL-3.0-or-later, which GPLv3 section 13
          permits. Never a copy of its source - the published package only. -->
-    <PackageVersion Include="pdn-soundmodem" Version="0.39.0" />
+    <PackageVersion Include="pdn-soundmodem" Version="0.41.0" />
 
     <!-- FlexRadio 6000-series client, for the Flex device's power control (rfpower with the
          watts read back). AGPL-3.0, and this repo is AGPL, so nothing to weigh. -->
