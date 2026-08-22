@@ -177,7 +177,31 @@ CI runner in one day; the fix is structural rather than a larger number.
   before the loop can look; under load it is queued instead, and that is the whole difference.
   `FileSender.ListenAsync` now keeps a timer of its own and puts the flag back up inside it,
   and the gap also ends where a Done is decoded rather than where the transfer's loop is next
-  scheduled. `FileReceiver.PauseAsync` has the same shape and has not been caught at it.
+  scheduled. `FileReceiver.PauseAsync` had the same shape and was caught at it the same way
+  (issue #20): instrumented under sixteen CPU burners, the clock ran seconds of the protocol's
+  time past a receiver whose poll tick had fired, six times in ten full-suite runs. It polls
+  on a timer of its own now, with the flag down only while the wait is genuinely open; the
+  flag covers the whole of the run otherwise, which is the sender's exact shape. Two details
+  are load-bearing. The safe direction for the timer's write is towards busy: a flag the
+  callback raises and the next turn clears hangs the suite the moment any tick lands with no
+  turn behind it to clear it - one poll timer left undisposed past its own park did exactly
+  that, deterministically. And a callback can still be in flight while its timer is being
+  disposed, so the write is pinned to its own park by a generation, or a stale one would
+  mark a later park not-parked and freeze the loop against a receiver that is genuinely
+  waiting.
+- **A wake must not travel through a ledger that can lose it.** The receiver's park used to be
+  woken by a semaphore the frame handler released. A `SemaphoreSlim` grants a released permit
+  to the head async waiter through a queued completion, and a waiter being cancelled - which
+  the poll winning the race does to the losing wait, every park - wins that race sometimes,
+  and the permit evaporates. The frame is then in the inbox with nobody coming back for it:
+  on the air that is one wasted poll interval, but under a settle loop it is the hang, because
+  the frame holds Busy true, so the clock is never moved, so the tick that would have rescued
+  it never fires. This was caught in a dump of a loaded run (issue #20): one frame queued, no
+  permit, both waits pending, the settle loop spinning, the sender parked in its listening
+  gap. The park now publishes a fresh `TaskCompletionSource` with a full fence before it looks
+  at the inbox, and the handler completes it with the matching fence after it enqueues, so a
+  frame is either seen by the look or wakes the signal, and there is no interleaving in which
+  it does neither.
 - **A test that moves the clock itself is bound by the same rule as the loop that does**, and
   by one more: it may not assume its own handler got there first. A handler subscribed after a
   session's runs second on the same frame, which puts it after the acknowledgement has been

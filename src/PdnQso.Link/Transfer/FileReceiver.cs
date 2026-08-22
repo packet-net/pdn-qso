@@ -41,9 +41,10 @@ public sealed class FileReceiver
     private readonly FileTransferOptions _options;
     private readonly TimeProvider _time;
     private readonly ConcurrentQueue<LinkFrame> _inbox = new();
-    private readonly SemaphoreSlim _arrived = new(0);
-    private int _sending;
+    private TaskCompletionSource? _arrived;
     private int _working;
+    private int _parked;
+    private int _parkGeneration;
 
     private LtDecoder? _decoder;
     private FileOfferPayload _offer;
@@ -80,8 +81,9 @@ public sealed class FileReceiver
     public Func<FileOfferPayload, bool>? AcceptOffer { get; set; }
 
     /// <summary>
-    /// True while this receiver has heard something it has not acted on yet, or is putting an
-    /// answer on air.
+    /// True while this receiver has heard something it has not acted on yet, or has a turn of
+    /// its own in hand: deciding what a frame meant, checking and writing the file, or putting
+    /// an answer on air.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -94,58 +96,132 @@ public sealed class FileReceiver
     /// An empty inbox is not the end of the work. What the frames meant is worked out after
     /// they come off the queue - the last symbol is peeled, the file is checked and written,
     /// and only then does a Done go on air - and a receiver that let this drop while it was
-    /// deciding would leave exactly the gap the flag exists to close. So the turn the loop
-    /// takes counts as busy too, from the moment it starts draining the inbox until it parks
-    /// again.
+    /// deciding would leave exactly the gap the flag exists to close. So the whole of a
+    /// receiving run counts as busy, and the flag is put down only for the waits: the poll,
+    /// which is over when the clock says so and would otherwise be waiting for a clock that
+    /// was waiting for it.
+    /// </para>
+    /// <para>
+    /// The wait it does put the flag down for ends where its timer fires or where a frame is
+    /// taken in, and not where this receiver's loop is next given a thread. Those are the same
+    /// instant on the wall clock and a long way apart on a clock a loaded test drives: with the
+    /// flag coming back up in the continuation after the await, the settle loop went on moving
+    /// time while the receiver's turn sat in the thread pool's queue, by nearly nine seconds of
+    /// the protocol's time in the worst run measured, across a receiver that was about to
+    /// answer (issue #20; the same fault <see cref="FileSender.Busy"/> had one level up, issue
+    /// #18).
     /// </para>
     /// </remarks>
     public bool Busy =>
-        !_inbox.IsEmpty || Volatile.Read(ref _working) > 0 || Volatile.Read(ref _sending) > 0;
+        !_inbox.IsEmpty
+        || (Volatile.Read(ref _working) > 0 && Volatile.Read(ref _parked) == 0);
 
     /// <summary>
     /// Waits for the next thing to do: a frame arriving, or the poll interval passing.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// It was the interval alone, which meant a frame already in the inbox sat there until the
     /// next tick even though there was nothing to wait for. That is latency for free on the
     /// air, and worse than that for a test on a clock of its own: "a frame is queued" could
     /// not be taken to mean "an answer is coming", because the answer needed time to pass
     /// first, and time was exactly what such a test was holding back.
+    /// </para>
+    /// <para>
+    /// The poll has a timer of its own rather than a <see cref="Task.Delay(TimeSpan)"/> for
+    /// the same reason <c>FileSender.ListenAsync</c> does: what <see cref="Busy"/> has to say
+    /// is "the wait is over and a turn is owed", and the only place that is known at the
+    /// instant it happens is the callback, which runs where the clock is moved and before
+    /// whoever moved it can look again. The continuation after the await runs whenever the
+    /// machine next gives it a thread, and on a loaded box the clock ran nine seconds past a
+    /// receiver waiting for exactly that (issue #20). The timer is disposed on the way out, so
+    /// a timer nobody is waiting on is not left in a test clock's queue moving time along.
+    /// </para>
     /// </remarks>
     private async Task PauseAsync(CancellationToken cancellationToken)
     {
-        // Never park with something already in hand. The inbox is the truth about whether there
-        // is work to do; the semaphore is only how a sleeping loop gets woken, and it cannot be
-        // trusted on its own: when the poll wins the race below, the wait that loses is
-        // cancelled, and a permit a sender had just released can be consumed by that abandoned
-        // wait and lost. The frame then sits in the queue with nobody coming back for it until
+        // Published before the inbox is checked, and completed by the frame handler after it
+        // has enqueued: a frame either lands before the check below and is seen, or lands
+        // after it and completes this, and there is no order in which it does neither. It used
+        // to be a semaphore, and a semaphore's permit is a promise that can be broken: a
+        // Release grants the permit to the head waiter through a queued completion, a waiter
+        // being cancelled wins that race, and the permit evaporates with a frame already in
+        // the queue. The receiver then parks with work in hand and nothing to wake it before
         // the next tick. On the real clock that is a wasted poll interval; in a test holding
-        // the clock still while anything says it is busy, it is a deadlock, and it hung a run
-        // for twenty minutes before it was found.
-        if (!_inbox.IsEmpty)
-        {
-            return;
-        }
+        // the clock still while anything reads busy, it is a deadlock, because the frame keeps
+        // Busy true, the settle loop therefore never moves the clock, and the tick that would
+        // have rescued it never comes. That state was caught in a dump on a loaded run: one
+        // frame queued, no permit, both waits pending, the settle loop spinning (issue #20).
+        var arrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var settled = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        Task woken = _arrived.WaitAsync(settled.Token);
-        Task waited = Task.Delay(_options.PollInterval, _time, settled.Token);
-        await Task.WhenAny(woken, waited).ConfigureAwait(false);
-        await settled.CancelAsync().ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
-    }
-
-    /// <summary>Puts one frame on air, counted so <see cref="Busy"/> can see it.</summary>
-    private async Task SendOnAirAsync(LinkFrame frame, CancellationToken cancellationToken)
-    {
-        Interlocked.Increment(ref _sending);
+        // A full fence, not a plain write: the publish has to be visible before the look at
+        // the inbox below is taken, and the handler puts the same fence between its enqueue
+        // and its read of this field, so at least one side always sees the other.
+        Interlocked.Exchange(ref _arrived, arrived);
         try
         {
-            await _station.SendAsync(frame, cancellationToken).ConfigureAwait(false);
+            // Never park with something already in hand. The inbox is the truth about whether
+            // there is work to do; the signal above covers everything that arrives after this
+            // look.
+            if (!_inbox.IsEmpty)
+            {
+                return;
+            }
+
+            var elapsed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            // The generation pins the callback's write to this park and no other. A timer is
+            // disposed on the way out, but a callback already past the disposed check can
+            // still be in flight, and one landing after a later park's flag went up would read
+            // as "the wait is over" for a wait that had not begun: the settle loop then never
+            // moves the clock, and the receiver never comes off a timer that needs it moved.
+            int generation = unchecked(_parkGeneration + 1);
+            Volatile.Write(ref _parkGeneration, generation);
+
+            using ITimer wake = _time.CreateTimer(
+                _ =>
+                {
+                    if (Volatile.Read(ref _parkGeneration) == generation)
+                    {
+                        Volatile.Write(ref _parked, 0);
+                    }
+
+                    elapsed.TrySetResult();
+                },
+                state: null,
+                _options.PollInterval,
+                Timeout.InfiniteTimeSpan);
+            using CancellationTokenRegistration stopped = cancellationToken.Register(
+                static state => ((TaskCompletionSource)state!).TrySetResult(), arrived);
+
+            // The one kind of moment this receiver has nothing in hand, so the one kind of
+            // moment a test's clock may move. The flag goes down only once the timer exists,
+            // so a wait that is already over by the time the flag goes down is one this can
+            // see and undo rather than one it races: the callback's own write cannot be the
+            // earlier of the two.
+            Volatile.Write(ref _parked, 1);
+            if (elapsed.Task.IsCompleted || arrived.Task.IsCompleted)
+            {
+                // Over before it began: a frame or the stop arrived while the timer was being
+                // created, or the air time of somebody's burst moved the clock past the whole
+                // poll. Nothing is being waited for, so nothing may move the clock.
+                Volatile.Write(ref _parked, 0);
+            }
+
+            try
+            {
+                await Task.WhenAny(arrived.Task, elapsed.Task).ConfigureAwait(false);
+            }
+            finally
+            {
+                Volatile.Write(ref _parked, 0);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
         }
         finally
         {
-            Interlocked.Decrement(ref _sending);
+            Volatile.Write(ref _arrived, null);
         }
     }
 
@@ -175,8 +251,13 @@ public sealed class FileReceiver
         _inbox.Clear();
         _decoder = null;
         _symbols = 0;
+        Volatile.Write(ref _parked, 0);
 
         _station.FrameReceived += OnFrameReceived;
+
+        // Work in hand for the whole run: see Busy. The poll puts it down for as long as it
+        // waits, which is the only kind of moment this receiver has nothing in hand.
+        Interlocked.Increment(ref _working);
         try
         {
             DateTimeOffset start = _time.GetUtcNow();
@@ -190,69 +271,58 @@ public sealed class FileReceiver
 
                 FileTransferResult? finished = null;
 
-                // Raised for the whole turn, not only while the inbox has something in it:
-                // see Busy. Put down again for anything that waits for time to pass, which is
-                // the only kind of moment where this receiver has nothing in hand.
-                Interlocked.Increment(ref _working);
-                try
+                while (_inbox.TryDequeue(out LinkFrame? frame))
                 {
-                    while (_inbox.TryDequeue(out LinkFrame? frame))
+                    switch (frame.Type)
                     {
-                        switch (frame.Type)
-                        {
-                            case LinkFrameType.FileOffer:
-                                if (HandleOffer(frame, ref start, ref lastStatus, ref lastSymbol))
-                                {
-                                    statusAsked = true;
-                                }
-
-                                break;
-
-                            case LinkFrameType.FileSymbol when _decoder is not null
-                                && frame.Session == _session:
-                                if (HandleSymbol(frame, start))
-                                {
-                                    lastSymbol = _time.GetUtcNow();
-                                }
-
-                                break;
-
-                            default:
-                                break;
-                        }
-                    }
-
-                    if (_decoder is not null)
-                    {
-                        if (_decoder.IsComplete)
-                        {
-                            finished = await CompleteAsync(start, cancellationToken)
-                                .ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            DateTimeOffset now = _time.GetUtcNow();
-                            if (now - lastSymbol > _options.Patience)
+                        case LinkFrameType.FileOffer:
+                            if (HandleOffer(frame, ref start, ref lastStatus, ref lastSymbol))
                             {
-                                finished = Finish(
-                                    start, path: null,
-                                    reason: string.Create(
-                                        CultureInfo.InvariantCulture,
-                                        $"the sender stopped: no symbol for {(now - lastSymbol).TotalSeconds:0.#} s "
-                                        + $"with {_decoder.Decoded} of {_decoder.BlockCount} blocks decoded"));
+                                statusAsked = true;
                             }
-                            else if (statusAsked || now - lastStatus >= _options.StatusInterval)
+
+                            break;
+
+                        case LinkFrameType.FileSymbol when _decoder is not null
+                            && frame.Session == _session:
+                            if (HandleSymbol(frame, start))
                             {
-                                await SendStatusAsync(cancellationToken).ConfigureAwait(false);
-                                lastStatus = _time.GetUtcNow();
-                                statusAsked = false;
+                                lastSymbol = _time.GetUtcNow();
                             }
-                        }
+
+                            break;
+
+                        default:
+                            break;
                     }
                 }
-                finally
+
+                if (_decoder is not null)
                 {
-                    Interlocked.Decrement(ref _working);
+                    if (_decoder.IsComplete)
+                    {
+                        finished = await CompleteAsync(start, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        DateTimeOffset now = _time.GetUtcNow();
+                        if (now - lastSymbol > _options.Patience)
+                        {
+                            finished = Finish(
+                                start, path: null,
+                                reason: string.Create(
+                                    CultureInfo.InvariantCulture,
+                                    $"the sender stopped: no symbol for {(now - lastSymbol).TotalSeconds:0.#} s "
+                                    + $"with {_decoder.Decoded} of {_decoder.BlockCount} blocks decoded"));
+                        }
+                        else if (statusAsked || now - lastStatus >= _options.StatusInterval)
+                        {
+                            await SendStatusAsync(cancellationToken).ConfigureAwait(false);
+                            lastStatus = _time.GetUtcNow();
+                            statusAsked = false;
+                        }
+                    }
                 }
 
                 if (finished is { } result)
@@ -265,6 +335,7 @@ public sealed class FileReceiver
         }
         finally
         {
+            Interlocked.Decrement(ref _working);
             _station.FrameReceived -= OnFrameReceived;
         }
     }
@@ -343,7 +414,7 @@ public sealed class FileReceiver
         }
 
         var status = new FileStatusPayload(_decoder!.Decoded, _decoder.BlockCount, _symbols);
-        return SendOnAirAsync(
+        return _station.SendAsync(
             _station.Frame(LinkFrameType.FileStatus, _session, status.Encode()), cancellationToken);
     }
 
@@ -386,7 +457,7 @@ public sealed class FileReceiver
         {
             var done = new FileDonePayload(_offer.FileId, _symbols);
             byte[] donePayload = done.Encode();
-            await SendOnAirAsync(
+            await _station.SendAsync(
                 _station.Frame(LinkFrameType.FileDone, _session, donePayload), cancellationToken)
                 .ConfigureAwait(false);
 
@@ -438,76 +509,60 @@ public sealed class FileReceiver
     /// a theoretical objection.
     /// </para>
     /// <para>
-    /// Called from inside the loop's own turn, and the turn's <see cref="Busy"/> flag is put
-    /// down for the duration: waiting to hear whether anyone is still out there is a wait for
-    /// time to pass, and a receiver that held itself busy through it would be waiting for a
-    /// clock that was waiting for the receiver (design.md 6e). Each round of actual work inside
-    /// it picks the flag back up.
+    /// Called from inside the loop's own turn, and <see cref="Busy"/> stays up for everything
+    /// in it except the polls themselves: waiting to hear whether anyone is still out there is
+    /// a wait for time to pass, and a receiver that held itself busy through it would be
+    /// waiting for a clock that was waiting for the receiver (design.md 6e). The poll puts the
+    /// flag down for exactly as long as it waits, and its timer puts it back up.
     /// </para>
     /// </remarks>
     private async Task LingerAsync(byte[] donePayload, CancellationToken cancellationToken)
     {
-        Interlocked.Decrement(ref _working);
-        try
+        DateTimeOffset lastHeard = _time.GetUtcNow();
+        while (_time.GetUtcNow() - lastHeard < _options.Patience)
         {
-            DateTimeOffset lastHeard = _time.GetUtcNow();
-            while (_time.GetUtcNow() - lastHeard < _options.Patience)
+            cancellationToken.ThrowIfCancellationRequested();
+            bool somebodyElse = false;
+            bool askedAgain = false;
+            while (_inbox.TryDequeue(out LinkFrame? frame))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                bool somebodyElse = false;
-                Interlocked.Increment(ref _working);
-                try
+                if (frame.Session == _session)
                 {
-                    bool askedAgain = false;
-                    while (_inbox.TryDequeue(out LinkFrame? frame))
-                    {
-                        if (frame.Session == _session)
-                        {
-                            askedAgain |=
-                                frame.Type is LinkFrameType.FileSymbol or LinkFrameType.FileOffer;
-                        }
-                        else if (frame.Type == LinkFrameType.FileOffer)
-                        {
-                            // Somebody is offering something else. The file this receiver has
-                            // is on disc and the station that sent it has either heard the Done
-                            // or is about to run out of patience; going on repeating ourselves
-                            // at it while a fresh transfer is being offered would miss the
-                            // fresh one, which is the cost that would otherwise come with a
-                            // window this long.
-                            somebodyElse = true;
-                        }
-                    }
-
-                    if (askedAgain)
-                    {
-                        await SendOnAirAsync(
-                            _station.Frame(LinkFrameType.FileDone, _session, donePayload),
-                            cancellationToken)
-                            .ConfigureAwait(false);
-
-                        // Counted from the end of the answer rather than from the frame that
-                        // prompted it: a half-duplex station hears nothing at all while it is
-                        // transmitting, and charging its own air time to the sender's silence
-                        // is how a link that is busy in both directions comes to look quiet.
-                        lastHeard = _time.GetUtcNow();
-                    }
+                    askedAgain |=
+                        frame.Type is LinkFrameType.FileSymbol or LinkFrameType.FileOffer;
                 }
-                finally
+                else if (frame.Type == LinkFrameType.FileOffer)
                 {
-                    Interlocked.Decrement(ref _working);
+                    // Somebody is offering something else. The file this receiver has
+                    // is on disc and the station that sent it has either heard the Done
+                    // or is about to run out of patience; going on repeating ourselves
+                    // at it while a fresh transfer is being offered would miss the
+                    // fresh one, which is the cost that would otherwise come with a
+                    // window this long.
+                    somebodyElse = true;
                 }
-
-                if (somebodyElse)
-                {
-                    return;
-                }
-
-                await PauseAsync(cancellationToken).ConfigureAwait(false);
             }
-        }
-        finally
-        {
-            Interlocked.Increment(ref _working);
+
+            if (askedAgain)
+            {
+                await _station.SendAsync(
+                    _station.Frame(LinkFrameType.FileDone, _session, donePayload),
+                    cancellationToken)
+                    .ConfigureAwait(false);
+
+                // Counted from the end of the answer rather than from the frame that
+                // prompted it: a half-duplex station hears nothing at all while it is
+                // transmitting, and charging its own air time to the sender's silence
+                // is how a link that is busy in both directions comes to look quiet.
+                lastHeard = _time.GetUtcNow();
+            }
+
+            if (somebodyElse)
+            {
+                return;
+            }
+
+            await PauseAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -554,7 +609,15 @@ public sealed class FileReceiver
         if (frame.Type is LinkFrameType.FileOffer or LinkFrameType.FileSymbol)
         {
             _inbox.Enqueue(frame);
-            _arrived.Release();
+
+            // After the enqueue, so that a loop this wakes finds the frame; and the park
+            // publishes its signal with a fence before it looks at the inbox, so the frame is
+            // either seen by that look or wakes this signal, with no order in which it does
+            // neither. The fence here is the other half of that pair. Waking a park that has
+            // already ended, or finding no park at all, costs nothing: the next park's look
+            // at the inbox is what covers a frame that arrives between two of them.
+            Interlocked.MemoryBarrier();
+            Volatile.Read(ref _arrived)?.TrySetResult();
         }
     }
 }

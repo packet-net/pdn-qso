@@ -41,6 +41,11 @@ design doc is binding on layout, protocol and conventions.
   it where the work falls due, which for a party parked on a timer is that timer's own
   callback and not the continuation after the await, and hand every one of them to the loop
   that drives the clock: a flag the settle loop was never given is a flag that does nothing.
+  The callback's write must move the flag towards busy, never towards idle, and must be pinned
+  to its own park (design.md 6d has the two hangs that taught this). A wake between threads
+  must not travel through a ledger that can lose it: wake a parked loop by completing a signal
+  it published before its last look at the queue, not through a semaphore whose cancelled
+  waiters can eat a permit.
 - Hot paths (anything per audio block or per symbol): no steady-state allocation, no LINQ.
 - **No em dashes or en dashes anywhere** - code, comments, docs, commit messages, PR bodies.
   Hyphen, comma, semicolon or full stop. Printable strings stay ASCII (`->` not an arrow).
