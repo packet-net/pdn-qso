@@ -82,7 +82,13 @@ public class PerfActivityModelTests : IDisposable
             sender,
             sender.Modem,
             link.SampleRate,
-            atSender.ToStreamOptions(txDelayMilliseconds: 300, centreHz: 1500),
+            // Pinned, as the perf library's own tests pin theirs: the session byte rides in
+            // every frame, so a run that leaves it out modulates different audio every time and
+            // this test becomes a draw from 256 rather than a measurement. Four of those 256
+            // put a frame on this rig's noiseless channel that no branch of the modem's bank
+            // ever finds sync on, and that is where "heard 7 of 8" came from (issue #17); see
+            // design.md 6f.
+            atSender.ToStreamOptions(txDelayMilliseconds: 300, centreHz: 1500) with { Session = 0x33 },
             CancellationToken.None);
         atSender.FinishRun();
         await receiving;
@@ -142,7 +148,9 @@ public class PerfActivityModelTests : IDisposable
 
         PerfReport report = await run.RunPingAsync(
             pinger,
-            model.ToPingOptions(centreHz: null),
+            // Pinned for the same reason as the stream run above: an unpinned session is a
+            // fresh draw of what goes on the air every time this runs. See design.md 6f.
+            model.ToPingOptions(centreHz: null) with { Session = 0x41 },
             CancellationToken.None);
         model.FinishRun();
 

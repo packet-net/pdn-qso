@@ -91,6 +91,85 @@ public class PerfStreamTests
         senderReport.Procedure.Should().Be("stream");
     }
 
+    /// <summary>
+    /// The count in the summary is the receiving station's own, and the wrap-up request never
+    /// overtakes a frame that arrived before it.
+    /// </summary>
+    /// <remarks>
+    /// Issue #17 was a run that came back one frame short, and the argument that said it could
+    /// not happen is the one pinned here: the frames and the wrap-up request cross on the same
+    /// transmitting thread, in the order they were sent, so a frame that arrived is counted
+    /// before the request that asks for the count. That held, and the missing frame turned out
+    /// never to have been decoded at all (design.md 6f). It is worth a test of its own because
+    /// nothing else says it: the counts elsewhere are all read against what the sender sent, so
+    /// a receiver that answered the request from a queue - which is exactly what the pong
+    /// responder does, and for a good reason - would pass every one of them while quietly
+    /// reporting a stale number. Counted at the station, below the perf run and above the
+    /// modem, so this holds whether the modem decoded everything or not.
+    /// </remarks>
+    [Fact]
+    public async Task The_Summary_Is_Exactly_What_The_Receiving_Station_Heard()
+    {
+        var clock = new VirtualClock();
+        using AudioLink link = AudioLink.Create(Mode);
+        using var medium = new HalfDuplexChannel();
+        await using var senderStation = new Station(
+            Options("M0LTE"), link.DeviceA, link.ModemA, OpenBusyGate.Instance, timeProvider: clock);
+        await using var receiverStation = new Station(
+            Options("G0OLD"), link.DeviceB, link.ModemB, OpenBusyGate.Instance, timeProvider: clock);
+
+        // What the receiving station heard, in the order it heard it, taken from the station's
+        // own event rather than from anything the perf run counted.
+        var arrivals = new List<string>();
+        var distinct = new HashSet<ushort>();
+        receiverStation.FrameReceived += (frame, _) =>
+        {
+            if (frame.Type == LinkFrameType.PerfStream && frame.Payload.Length >= 2)
+            {
+                ushort seq = (ushort)((frame.Payload.Span[0] << 8) | frame.Payload.Span[1]);
+                distinct.Add(seq);
+                arrivals.Add("stream");
+            }
+            else if (frame.Type == LinkFrameType.PerfPing)
+            {
+                arrivals.Add("wrap-up");
+            }
+        };
+
+        senderStation.Start();
+        receiverStation.Start();
+        IStation sender = medium.Wrap(senderStation);
+        IStation receiver = medium.Wrap(receiverStation);
+
+        var senderRun = new PerfRun(clock);
+        var receiverRun = new PerfRun(clock);
+
+        // Session pinned for the same reason as the test above: unpinned it is a fresh draw of
+        // what goes on the air every run, and four of the 256 draws put out a frame this rig's
+        // noiseless channel does not carry. See design.md 6f.
+        var options = new PerfStreamOptions { FrameCount = 12, PayloadSize = 40, Session = 0x33 };
+
+        Task<PerfReport> receiverTask = receiverRun.RunStreamReceiverAsync(receiver);
+        await VirtualTime.WaitForAsync(() => receiverRun.Listening);
+
+        PerfReport senderReport = await senderRun.RunStreamSenderAsync(
+            sender, link.ModemA, link.SampleRate, options);
+        PerfReport receiverReport = await receiverTask;
+
+        senderReport.FramesHeard.Should().Be(
+            distinct.Count,
+            "the summary carries the receiving station's own count of what arrived, not a count "
+            + "taken after the fact");
+        receiverReport.FramesHeard.Should().Be(distinct.Count);
+
+        arrivals.Should().NotBeEmpty();
+        arrivals[^1].Should().Be(
+            "wrap-up",
+            "the request for the count is the last thing the receiver hears, so every frame that "
+            + "arrived is already in the number it answers with");
+        arrivals.Should().ContainSingle(what => what == "wrap-up", "one clean run asks once");
+    }
+
     [Fact]
     public async Task Lost_Stream_Frames_Are_Counted_As_Gaps_Not_As_Successes()
     {

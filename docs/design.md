@@ -272,6 +272,52 @@ machine ran first either.** Both are real on the air as well - a needless retran
 time, and a round-trip figure that is really a thread-pool measurement is not a measurement - so
 the fix belongs in the library rather than in a bigger margin in the rig.
 
+### 6f. A noiseless link is not a perfect link, and a test may not draw its own audio at random
+
+Issue #17 was the last surviving shape of #12: `A_Stream_Run_Fills_In_A_Table_At_Both_Ends` came
+back with `heard 7` of eight, twice in twenty-five full-suite runs under eight CPU burners, and
+never with the class on its own. It is not load, it is not a race, and it is not the counting;
+the whole thing is a lottery over what the test puts on the air. The rate is one run in
+sixty-four, busy machine or idle, and two in twenty-five is what a small sample of that looks
+like.
+
+- **The session byte rides in every frame, and it is random when it is not given.** A stream run
+  with no `Session` therefore modulates different audio every time it runs, so the test is one
+  draw from 256 rather than a measurement of anything. The perf library's own tests pin theirs
+  and say why; the two end-to-end tests in `PerfActivityModelTests` went through
+  `PerfActivityModel`, which has no session to set, and did not.
+- **Four of those 256 draws do not decode.** Swept exhaustively through the whole rig, sessions
+  194, 219, 233 and 240 each lose exactly one frame - seq 7, 5, 1 and 3 respectively - every
+  time, and the other 252 lose none. Same value, same frame, run after run: the failure was
+  deterministic all along and the load was a coincidence of when the die came up.
+- **The frame never reaches the receiver's decoder at all.** Instrumented at
+  `IModem.FrameDecoded`, at `IStation.FrameReceived` and at the run's own counter, all three
+  agree: seven arrived. Taken out of the rig entirely - one frame, one fresh modem pair, one
+  `RunBurst` - the same frame still does not decode, with `RsFailures` and `CrcFailures` both
+  zero, so no branch of the bank ever found sync on it. It is not a corrupted read, it is
+  silence.
+- **A whisper of noise fixes it.** The same frame decodes first time at 120 dB SNR, and at every
+  step down the ladder to 40 dB. What defeats the modem is the mathematically perfect input:
+  `AudioChannel.Clean` adds nothing at all. That half of it is pdn-soundmodem's to answer, and
+  the four session bytes above are its repro; on the air there is always a noise floor, so
+  nothing here is reachable from a radio. It is the bpsk banks and not the modems generally:
+  three hundred arbitrary frames through `afsk1200-il2p` on the same channel lost none.
+
+Two rules come out of it, and both are section 6d's rule in different clothes:
+
+- **Nothing a test asserts may depend on a draw, any more than on how busy the machine is.** A
+  test that puts random content on the air and then pins an exact frame count is asserting the
+  modem's behaviour over a sample space it never looks at. Pin the session.
+- **`AudioChannel.Clean` is a perfect wire and not a good channel.** It is the right default for
+  a protocol question, and it is not evidence about a modem. An exact frame count over it is a
+  claim about one specific piece of audio, so the audio has to be fixed for the claim to mean
+  anything twice.
+
+The ordering argument that #17 doubted - a frame crossing on the transmitting thread is counted
+before the wrap-up request that follows it - was right, and it is now pinned by
+`The_Summary_Is_Exactly_What_The_Receiving_Station_Heard`, which reads the count at the station
+and compares it with what came back over the air.
+
 ## 7. Phases and agents
 
 A (skeleton + Monitor + devices + settings) first; then B (chat ARQ), C (fountain + file), D (perf) in parallel; E (packaging, README, hand-off). Each phase is a PR with its own tests; the skeleton phase also brings `ci.yml` and `release.yml` (copied in shape from pdn-soundmodem, self-hosted runner labels, release notes from PR titles via `scripts/release-notes.py`).
