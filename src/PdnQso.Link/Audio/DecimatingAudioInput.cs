@@ -76,6 +76,12 @@ public sealed class DecimatingAudioInput : IAudioInput, IDisposable
     /// <summary>The whole-number ratio between the device's rate and the modem's.</summary>
     public int Factor => _factor;
 
+    /// <summary>
+    /// The faster device under this one, for a caller after that device's own counters - a
+    /// test reading how many real samples the pipe behind a decimated station delivered.
+    /// </summary>
+    public IAudioInput Inner => _inner;
+
     /// <inheritdoc />
     public int Read(Span<float> destination)
     {

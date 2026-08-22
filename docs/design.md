@@ -152,6 +152,19 @@ CI runner in one day; the fix is structural rather than a larger number.
   the runner reports honestly. `RunAsync`/`UntilAsync` let the clock move so protocol timeouts
   fire, on one rule: let everything runnable run, and move the clock on only when nothing is
   busy and nothing has moved since the last look.
+- **The one real-time class bounds its waits in the medium's own units.** `PipeDeviceTests`
+  runs on real FIFOs paced to the wall clock, and there the no-deadline rule inverts: under
+  CPU starvation a held-off writer leaves the paced reader padding the middle of the burst
+  with silence, the frame is genuinely lost, and a wait with no bound turns that loss into a
+  suite that never finishes (issue #23: three hangs in fifty-six runs at six-fold
+  oversubscription). `VirtualTime.WaitForWithinAirAsync` waits for the fact until the
+  receiving device has pumped a generous multiple of the audio the awaited frame occupies,
+  counted off the device's own pump, then fails saying how much air passed and how much real
+  audio the pipe delivered. Still not a deadline: a starved box pumps its air late and the
+  budget stretches with it, so the verdict is a statement about the link and not the machine.
+  The budget cannot be counted in real samples alone - real audio stops accruing when the
+  sender falls silent, so a lost frame would freeze that counter below any budget and the
+  wait would hang exactly as before.
 - **Anything the clock must not be run past has to say so from the instant it takes the work
   on**, not from when its own pump wakes up: `AudioLink.Carrying` (a burst in the air),
   `ChatSession.Sending` (an answer owed, counted where the frame is posted),
