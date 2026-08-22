@@ -12,10 +12,20 @@ namespace PdnQso.Tests;
 /// and the receive path agree about more than a buffer round trip.
 /// </summary>
 /// <remarks>
+/// <para>
 /// This runs in real time - the capture side paces itself to wall clock exactly as a sound card
 /// does - so it is deliberately one short frame at the fastest audio mode rather than a sweep.
 /// It is not a channel: there is no noise and no propagation here, and nothing measured through
 /// it is a statement about a modem.
+/// </para>
+/// <para>
+/// Because it is real time, a frame here can genuinely be lost - a starved writer leaves the
+/// paced reader padding the middle of the burst with silence, which is issue #23 - so every
+/// open-ended wait in this class is bounded in the medium's own units by
+/// <see cref="VirtualTime.WaitForWithinAirAsync"/>, where the virtual-clock tests rightly
+/// leave theirs unbounded. The keying test carries no such wait: its one await is the send
+/// itself, whose write the FIFO's own buffer bounds.
+/// </para>
 /// </remarks>
 public class PipeDeviceTests
 {
@@ -48,11 +58,20 @@ public class PipeDeviceTests
             a.Start();
             b.Start();
 
-            await a.SendAsync(a.Frame(LinkFrameType.Hello, 0x5A, "hello over a pipe"u8));
+            LinkFrame greeting = a.Frame(LinkFrameType.Hello, 0x5A, "hello over a pipe"u8);
+            await a.SendAsync(greeting);
 
-            // Waited for, not timed: the FIFOs and the pacing under this are real, and how
-            // long the machine takes over them is not a claim this test is making.
-            await VirtualTime.WaitForAsync(() => heard.Task.IsCompleted);
+            // Bounded by the medium, not timed: how long the machine takes over the FIFOs is
+            // still not a claim this test makes, but the send has fully left by here, so once
+            // the receiver has pumped ten bursts' worth of air past this point the frame is
+            // not late, it is lost, and saying so beats hanging the suite (issue #23).
+            long burst = BurstSamples(greeting);
+            await VirtualTime.WaitForWithinAirAsync(
+                (PumpedAudioDevice)deviceB,
+                () => heard.Task.IsCompleted,
+                airBudgetSamples: 10 * burst,
+                "station B should have heard the frame",
+                () => PostMortem(deviceB, burst));
             LinkFrame received = await heard.Task;
 
             received.Source.Should().Be("M0LTE-7");
@@ -130,11 +149,18 @@ public class PipeDeviceTests
             a.Start();
             b.Start();
 
-            await a.SendAsync(a.Frame(LinkFrameType.Hello, 0x5A, "hello at four times the rate"u8));
+            LinkFrame greeting = a.Frame(LinkFrameType.Hello, 0x5A, "hello at four times the rate"u8);
+            await a.SendAsync(greeting);
 
-            // Waited for, not timed: the FIFOs and the pacing under this are real, and how
-            // long the machine takes over them is not a claim this test is making.
-            await VirtualTime.WaitForAsync(() => heard.Task.IsCompleted);
+            // Bounded by the medium, not timed, exactly as the 1:1 test is; the budget is in
+            // samples at the mode's rate, which is the rate the decimated device pumps at.
+            long burst = BurstSamples(greeting);
+            await VirtualTime.WaitForWithinAirAsync(
+                (PumpedAudioDevice)deviceB,
+                () => heard.Task.IsCompleted,
+                airBudgetSamples: 10 * burst,
+                "station B should have heard the frame",
+                () => PostMortem(deviceB, burst));
             LinkFrame received = await heard.Task;
 
             received.Source.Should().Be("M0LTE-7");
@@ -148,12 +174,57 @@ public class PipeDeviceTests
         }
     }
 
+    private const int TxDelayMilliseconds = 100;
+
     private static StationOptions Options(string callsign) => new()
     {
         Callsign = callsign,
-        TxDelayMilliseconds = 100,
+        TxDelayMilliseconds = TxDelayMilliseconds,
     };
 
     private static string Fifo(string name) =>
         Path.Combine(Path.GetTempPath(), $"pdn-qso-test-{Guid.NewGuid():N}-{name}");
+
+    /// <summary>
+    /// How much air the frame under test occupies, in samples at the mode's rate. Measured
+    /// rather than estimated: the mode's own modulator renders the very frame, txdelay and
+    /// all, and the length of what comes back is the length of what station A puts on the
+    /// pipe. The air budget on a wait is a multiple of this, so it tracks the frame and the
+    /// mode instead of going stale beside them.
+    /// </summary>
+    private static long BurstSamples(LinkFrame frame)
+    {
+        IModem modem = ModemCatalog.Create(Mode, ModemCatalog.DspRateFor(Mode), _ => { });
+        try
+        {
+            return modem.Modulate(frame.Encode(), TxDelayMilliseconds).Length;
+        }
+        finally
+        {
+            (modem as IDisposable)?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Where the audio got to, for the failure message: a miss that heard no real audio at
+    /// all is a starved or broken writer, and one that heard the whole burst but decoded
+    /// nothing is a shredded or unreadable one. Read only after the wait has failed.
+    /// </summary>
+    private static string PostMortem(IAudioDevice device, long burstSamples)
+    {
+        var pumped = (PumpedAudioDevice)device;
+        PipeAudioInput pipe = pumped.Input switch
+        {
+            PipeAudioInput direct => direct,
+            DecimatingAudioInput decimated => (PipeAudioInput)decimated.Inner,
+            _ => throw new InvalidOperationException(
+                $"{pumped.Input.GetType().Name} is not a pipe input"),
+        };
+
+        // The pipe counts at the device's rate, the burst was measured at the mode's; one
+        // whole-number factor apart, as the decimator requires.
+        long occupies = burstSamples * (pipe.SampleRate / pumped.SampleRate);
+        return $"the pipe delivered {pipe.SamplesFromPipe} real samples "
+            + $"where the burst occupies {occupies}";
+    }
 }

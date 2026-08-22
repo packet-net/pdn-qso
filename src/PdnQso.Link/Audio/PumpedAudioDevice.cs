@@ -122,6 +122,21 @@ public sealed class PumpedAudioDevice : IAudioDevice
     /// <summary>How many blocks have been delivered - a liveness counter for the UI.</summary>
     public long BlocksCaptured { get; private set; }
 
+    /// <summary>
+    /// How much air has been delivered, in samples at <see cref="SampleRate"/> - the device's
+    /// own elapsed time. A real-time test bounds its waits with this, there being no other
+    /// clock it is allowed to read: "the frame did not arrive within this much pumped air" is
+    /// a statement about the link that stays true or false however busy the machine was.
+    /// </summary>
+    public long SamplesCaptured => BlocksCaptured * _block.Length;
+
+    /// <summary>
+    /// The capture seam this device pumps. Exposed so that a caller who built the device over
+    /// a paced input - the pipe pair - can still read that input's own counters; the wrapper
+    /// would otherwise be the only thing that could say how the audio got on.
+    /// </summary>
+    public IAudioInput Input => _input;
+
     /// <inheritdoc />
     public void Start()
     {

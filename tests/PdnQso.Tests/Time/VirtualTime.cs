@@ -84,6 +84,87 @@ public static class VirtualTime
     }
 
     /// <summary>
+    /// Waits for something a real-time device is producing, and fails the test once the
+    /// device has pumped <paramref name="airBudgetSamples"/> of audio without it happening.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The counterpart of <see cref="WaitForAsync"/> for the one kind of test that runs on
+    /// the wall clock: a device paced like a sound card, where the audio takes as long as it
+    /// takes. The no-deadline rule is wrong there. On a paced device a frame can genuinely be
+    /// lost - CPU starvation holds the writer off long enough that the reader pads the middle
+    /// of the burst with silence, and no amount of further waiting brings the frame back - so
+    /// a wait with no bound turns a lost frame into a suite that never finishes. Issue #23
+    /// measured that at about one run in twenty under six-fold oversubscription.
+    /// </para>
+    /// <para>
+    /// The bound is still not a deadline. It is counted in the medium's own samples, off the
+    /// receiving device's own pump, so "the frame did not arrive within this much air" is a
+    /// statement about the link that is true or false however busy the machine was: a starved
+    /// box pumps its air late, and the budget stretches with it by exactly as much. Note that
+    /// the budget has to be counted in pumped air - real samples and filled-in silence
+    /// together - and not in the pipe's own count of real audio: real audio stops accruing
+    /// the moment the sender falls silent, so a lost frame would freeze that counter below
+    /// any budget and the wait would hang exactly as before. The one thing that still hangs
+    /// here is a medium whose pump has stopped entirely, and that is right: with the medium
+    /// stopped there is no air to count a verdict in, and the runner's own timeout reporting
+    /// "this never happened" is the honest finding.
+    /// </para>
+    /// </remarks>
+    /// <param name="receiver">The device whose pump counts the air off.</param>
+    /// <param name="fact">What is being waited for.</param>
+    /// <param name="airBudgetSamples">How much pumped air to allow from this call before the
+    /// fact is declared to have not happened, in samples at the device's own rate. Make it a
+    /// generous multiple of the audio the awaited thing occupies.</param>
+    /// <param name="what">What to say it was waiting for, if it never happened.</param>
+    /// <param name="postMortem">Evidence to append to the failure, read only once it has
+    /// failed: where the audio got to, so a miss on a loaded runner says whether the burst
+    /// never arrived or arrived unreadable.</param>
+    public static async Task WaitForWithinAirAsync(
+        PumpedAudioDevice receiver,
+        Func<bool> fact,
+        long airBudgetSamples,
+        string what,
+        Func<string>? postMortem = null)
+    {
+        ArgumentNullException.ThrowIfNull(receiver);
+        ArgumentNullException.ThrowIfNull(fact);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(airBudgetSamples);
+
+        long from = receiver.SamplesCaptured;
+        int spins = 0;
+        while (!fact())
+        {
+            long pumped = receiver.SamplesCaptured - from;
+            if (pumped > airBudgetSamples)
+            {
+                // The assertion re-reads the fact, so something that came true between the
+                // pump crossing the budget and this loop noticing still passes; the budget is
+                // generous enough that nothing is ever failed while its audio is still in the
+                // demodulator.
+                string evidence = postMortem is null ? string.Empty : $"; {postMortem()}";
+                fact().Should().BeTrue(
+                    $"{what} within {airBudgetSamples / (double)receiver.SampleRate:0.#} s of "
+                    + $"pumped air, and the device has pumped "
+                    + $"{pumped / (double)receiver.SampleRate:0.#} s{evidence}");
+                return;
+            }
+
+            // The same ladder as WaitForAsync: yield while the fact is merely queued, then
+            // give the core back. The delay is how this loop shares the machine, not how it
+            // decides anything - the verdict above is counted in air alone.
+            if (++spins < 1000)
+            {
+                await Task.Yield();
+            }
+            else
+            {
+                await Task.Delay(1).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
     /// Hands the machine back to whatever else is runnable, once. For a loop waiting on
     /// something a real device is doing on its own thread.
     /// </summary>
