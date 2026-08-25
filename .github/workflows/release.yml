@@ -41,7 +41,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      # Node 24, so an Actions runner of 2.327.1 or newer. See ci.yml.
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the release notes are written from first-parent history between tags
 
@@ -149,7 +150,7 @@ jobs:
           sha256sum *.deb > SHA256SUMS
           cat SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pdn-qso-${{ steps.version.outputs.version }}
           path: |

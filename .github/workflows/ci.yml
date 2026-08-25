@@ -9,7 +9,11 @@ jobs:
   build-test:
     runs-on: [self-hosted, Linux, X64]
     steps:
-      - uses: actions/checkout@v4
+      # These actions run on Node 24, which needs an Actions runner of 2.327.1 or newer.
+      # Ours are self-hosted (studybox, hyperv-gha), so that is a thing to check here and
+      # not something GitHub keeps current for us: `gh api /orgs/packet-net/actions/runners`
+      # reports the version each one is on.
+      - uses: actions/checkout@v7
       # The xUnit v3 / MTP test apphosts (OutputType=Exe) resolve the runtime via DOTNET_ROOT;
       # the runner's distro dotnet lives outside the apphost's default search paths
       # (/usr/share/dotnet, /etc/dotnet/install_location), so register it explicitly or every
