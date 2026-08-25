@@ -54,8 +54,11 @@ design doc is binding on layout, protocol and conventions.
 - **A PR title is a release-note bullet**: one plain, user-facing line with a
   `feat:`/`fix:`/`docs:`/`test:`/`chore:` prefix; detail in the body. Releases are `v*` tags;
   `release.yml` builds the `.deb`s and writes the notes from PR titles.
-- Run targeted tests with the test exe and `-class`/`-method` (xunit v3 on Microsoft.Testing
-  Platform ignores `dotnet test --filter`).
+- `dotnet test` runs on Microsoft.Testing.Platform, opted into by `global.json`'s
+  `test.runner`. Microsoft.Testing.Platform 2.x dropped the VSTest bridge on the .NET 10
+  SDK, so removing that opt-in breaks every test run before a test is discovered. Under it
+  `dotnet test --filter "FullyQualifiedName~Thing"` works and the runner names its own
+  failures on stdout; the test exe with `-class`/`-method` still works too.
 
 ## What lives where
 
