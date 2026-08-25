@@ -101,27 +101,10 @@ jobs:
       - name: Restore (bypassing the NuGet HTTP cache)
         run: dotnet restore --no-http-cache
 
+      # The runner is Microsoft.Testing.Platform, opted into by global.json's `test.runner`,
+      # and it names its own failures on stdout. See ci.yml.
       - name: Test
         run: dotnet test --configuration Release --no-restore
-
-      # Same reason as ci.yml: the runner prints only "Failed: N" and writes the names to a
-      # UTF-16 log on the runner that nobody downstream ever sees. A release that refuses to
-      # publish is the pipeline working - but it has to say what it refused over.
-      - name: Name the failures
-        if: failure()
-        run: |
-          found=0
-          while IFS= read -r f; do
-            found=1
-            echo "::group::$(basename "$f")"
-            log="$(iconv -f UTF-16LE -t UTF-8 "$f" 2>/dev/null || cat "$f")"
-            log="$(sed 's/\x1b\[[0-9;]*m//g' <<<"$log")"
-            grep -A 6 -E "^failed |^\s+failed " <<<"$log" | head -120 || true
-            echo "--- tail ---"
-            grep -vE "^\s*$" <<<"$log" | tail -40
-            echo "::endgroup::"
-          done < <(find tests -path '*/TestResults/*.log' -newermt '-30 minutes' 2>/dev/null)
-          [ "$found" = 1 ] || echo "::warning::no TestResults log found to report"
 
       - name: Build .deb packages
         run: |

@@ -25,30 +25,12 @@ jobs:
         run: dotnet restore --no-http-cache
       - name: Build
         run: dotnet build --configuration Release --no-restore
+      # global.json opts this repo into the Microsoft.Testing.Platform `dotnet test` (see its
+      # `test.runner`). Microsoft.Testing.Platform 2.x, which xunit.v3 4.0.0 brings, removed the
+      # VSTest bridge on the .NET 10 SDK, so without that opt-in this step fails before it runs
+      # a single test.
       - name: Test
         run: dotnet test --configuration Release --no-build
-
-      # A red build that does not name the test is a reproduce-and-guess cycle every time. The
-      # MTP runner prints only "Failed: 1" and writes the names to a log on the runner, which is
-      # not this machine and is not uploaded - so surface it here. The file is UTF-16, which is
-      # why plain grep finds nothing in it, and it records only failures and skips.
-      - name: Name the failures
-        if: failure()
-        run: |
-          found=0
-          while IFS= read -r f; do
-            found=1
-            echo "::group::$(basename "$f")"
-            log="$(iconv -f UTF-16LE -t UTF-8 "$f" 2>/dev/null || cat "$f")"
-            # MTP writes ANSI colour codes into the log; the per-test "failed <name>" lines
-            # start with an escape sequence, so an unstripped ^failed grep names nothing.
-            log="$(sed 's/\x1b\[[0-9;]*m//g' <<<"$log")"
-            grep -A 6 -E "^failed |^\s+failed " <<<"$log" | head -120 || true
-            echo "--- tail ---"
-            grep -vE "^\s*$" <<<"$log" | tail -40
-            echo "::endgroup::"
-          done < <(find tests -path '*/TestResults/*.log' -newermt '-30 minutes' 2>/dev/null)
-          [ "$found" = 1 ] || echo "::warning::no TestResults log found to report"
 
       # Smoke-build the .deb so packaging breakage surfaces here rather than at the moment
       # somebody cuts a tag. amd64 only - the arch-specific part is one SDK flag.

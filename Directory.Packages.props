@@ -3,7 +3,7 @@
     <!-- The modems, the framing, the audio devices and the frame quality this tool measures
          with. GPL-3.0-or-later; this repo is AGPL-3.0-or-later, which GPLv3 section 13
          permits. Never a copy of its source - the published package only. -->
-    <PackageVersion Include="pdn-soundmodem" Version="0.43.0" />
+    <PackageVersion Include="pdn-soundmodem" Version="0.48.1" />
 
     <!-- FlexRadio 6000-series client, for the Flex device's power control (rfpower with the
          watts read back). AGPL-3.0, and this repo is AGPL, so nothing to weigh. -->
@@ -11,9 +11,10 @@
 
     <!-- The frame log's store: the daemon writes SQLite, and Monitor writes the same schema
          so the existing tooling can read what this tool captured. MIT. -->
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.0" />
-    <!-- Pinned above what Microsoft.Data.Sqlite drags in: its transitive
-         SQLitePCLRaw.lib.e_sqlite3 2.1.11 carries GHSA-2m69-gcr7-jv3q. -->
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+    <!-- Pinned above what Microsoft.Data.Sqlite drags in (SQLitePCLRaw 2.1.12), because the
+         2.1.x line carried GHSA-2m69-gcr7-jv3q up to 2.1.11 and still ships an older native
+         amalgamation than the 3.x bundle's SQLite 3.53.4. Keep the pin. -->
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
 
     <!-- The terminal UI. MIT. -->
@@ -21,8 +22,8 @@
 
     <!-- Testing - xUnit v3 on the Microsoft Testing Platform (MTP) runner, as pdn-soundmodem
          does: the test project is an Exe and is run directly. -->
-    <PackageVersion Include="xunit.v3" Version="3.2.2" />
-    <PackageVersion Include="AwesomeAssertions" Version="9.2.0" />
-    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.0.0" />
+    <PackageVersion Include="xunit.v3" Version="4.0.0" />
+    <PackageVersion Include="AwesomeAssertions" Version="9.6.0" />
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.9.0" />
   </ItemGroup>
 </Project>
