@@ -54,9 +54,13 @@ Phases B, C and D are independent of each other once A exists; A comes first bec
 
 **What shipped, 2026-08-21.** A and A2 (the screen, the four devices, settings and the wizard), B (chat ARQ with a waveform ladder), C (the LT fountain and the file transfer), D (the stream and ping-pong measurements), then the wiring pass that put B, C and D on the screen as real activities, and E. Two copies of the program over a `pipe:` pair have held a conversation both ways with delivery ticks, moved a 2 kB file byte-exact, and taken a twenty-frame stream and a twenty-frame ping-pong with the row exported to CSV. The bench session and everything on a radio are still to come.
 
-## 6. Open choices for Tom
+## 6. Choices that were open, and what they were settled as
 
-- The name (`pdn-qso` is a placeholder).
-- Whether the Flex device should expose power in the UI (convenient for perf ladders; easy to misuse on a shared rig).
-- Whether Monitor mode should also write the daemon's frame-log format, so captures from the tool can be scored with the existing tooling.
-- Whether the ARQ should be allowed to fall back to a more robust MS110D waveform automatically when retries pile up (the SETHW switch exists; the policy is a decision).
+All four questions this section used to ask were answered while the tool was being built. They are recorded here as answers, with where the answer lives, because the code moved on and this list did not.
+
+- **The name.** `pdn-qso`, settled in practice rather than by a decision: it is the repository, the binary, the `.deb`, the config directory and six releases' worth of tags. Still Tom's to overrule, but it is no longer a placeholder anything is waiting on.
+- **Flex power in the UI: yes.** The settings dialog has a "Power (W or %)" field, `StationHost.ApplyPowerAsync` sets it on a device whose power control `CanSet`, and the status bar shows the value read back off the radio (`set 10 W, last 9.5 W`). A CM108 station gets the same field through its playback mixer, behind the "Mixer as power" checkbox. The misuse worry is handled by the readback: what the radio says it is doing is on screen, next to what it was asked to do.
+- **Monitor writes the daemon's frame-log format: yes.** `PdnQso.Link.Logging.FrameLogWriter` reproduces the daemon's `frames` table field for field, column names, order, ISO-8601 round-trip timestamps and `direction` values, so `sm-ota`'s replay diff and the survey scripts read a capture from this tool without knowing it was not the daemon. It is on by default with a path under the config directory, and `Frame log path` in the settings dialog moves it.
+- **Automatic waveform fallback: yes, and switchable off.** `WaveformLadder` steps the MS110D waveform down when retries pile up and back up once the link has been working, over the ladder 8 -> 7 -> 6 -> 5 -> 4 -> 2. `StepWaveform` defaults to on, which is what a QSO wants; off pins the waveform where the operator put it, which is what a measurement run wants. The ladder refuses to touch a modem that does not report an `ms110d-wn*` mode, because SETHW's payload is defined by whichever modem implements it.
+
+What is genuinely still open is not a design question: it is the bench session and getting any of this onto a radio.
