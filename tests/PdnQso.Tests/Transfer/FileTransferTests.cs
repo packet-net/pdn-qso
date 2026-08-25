@@ -282,16 +282,31 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
 
         // Wait for the answer itself, not for the receiver to look idle. `Busy` is down both
         // before a frame in flight has reached the inbox and while an answer is owed but is
-        // holding for a quiet channel, so `!Busy` can be true without a single thing having
-        // happened yet, and this wait was a no-op in the runs where it mattered. Neither
-        // window may raise `Busy`: the quiet gate needs the clock to move to mature, and a
-        // settle loop that will not move the clock for a receiver that is waiting on the
-        // clock is the deadlock the flag's own remarks warn about. So the fact to wait for is
-        // the status arriving, and it is the wait that pins it - the count asserted at the end
-        // could not be reached any other way.
-        await VirtualTime.WaitForAsync(() => Volatile.Read(ref statuses) >= 1);
+        // holding for a quiet channel, so `!Busy` can be true with nothing having happened
+        // yet. Neither window may raise `Busy`: the quiet gate needs the clock to move before
+        // it can mature, and a settle loop that will not move the clock for a receiver that is
+        // waiting on the clock is the deadlock that flag's own remarks warn about.
+        //
+        // So the clock has to be driven, which is `SettleAsync` and not `WaitForAsync` - the
+        // latter waits for a fact without moving time, and a fact that needs a quarter second
+        // of quiet to become true is one it can wait on for ever.
+        //
+        // The budget says which status is being counted. The gate answers after
+        // `QuietBeforeAnswering`, a quarter of a second, and falls back to answering anyway
+        // after `StatusInterval + ListenInterval`, which these options put thirty-two seconds
+        // out. Five seconds is far past the first and nowhere near the second, so a status
+        // that arrives inside it is one the offer asked for rather than one the fallback gave
+        // up and sent.
+        await AStatusArrives(1, "the first offer asks for one");
         await SendOfferAsync(rig.A, session: 0x20, second, CancellationToken.None);
-        await VirtualTime.WaitForAsync(() => Volatile.Read(ref statuses) >= 2);
+        await AStatusArrives(2, "a repeat of an offer in hand asks for another");
+
+        async Task AStatusArrives(int count, string because) =>
+            (await rig.SettleAsync(
+                () => Volatile.Read(ref statuses) >= count,
+                answering: receiver,
+                budget: TimeSpan.FromSeconds(5)))
+                .Should().BeTrue(because);
 
         for (int index = 3; index < encoder.BlockCount; index++)
         {
