@@ -108,7 +108,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         {
             if (frame.Type == LinkFrameType.FileStatus)
             {
-                statuses++;
+                Interlocked.Increment(ref statuses);
             }
         };
 
@@ -269,7 +269,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         {
             if (frame.Type == LinkFrameType.FileStatus)
             {
-                statuses++;
+                Interlocked.Increment(ref statuses);
             }
         };
 
@@ -280,11 +280,18 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
             await SendSymbolAsync(rig.A, session: 0x20, encoder, index, CancellationToken.None);
         }
 
-        // Wait for the receiver to have acted on what it has, rather than for a tenth of a
-        // second and a hope.
-        await VirtualTime.WaitForAsync(() => !receiver.Busy);
+        // Wait for the answer itself, not for the receiver to look idle. `Busy` is down both
+        // before a frame in flight has reached the inbox and while an answer is owed but is
+        // holding for a quiet channel, so `!Busy` can be true without a single thing having
+        // happened yet, and this wait was a no-op in the runs where it mattered. Neither
+        // window may raise `Busy`: the quiet gate needs the clock to move to mature, and a
+        // settle loop that will not move the clock for a receiver that is waiting on the
+        // clock is the deadlock the flag's own remarks warn about. So the fact to wait for is
+        // the status arriving, and it is the wait that pins it - the count asserted at the end
+        // could not be reached any other way.
+        await VirtualTime.WaitForAsync(() => Volatile.Read(ref statuses) >= 1);
         await SendOfferAsync(rig.A, session: 0x20, second, CancellationToken.None);
-        await VirtualTime.WaitForAsync(() => !receiver.Busy);
+        await VirtualTime.WaitForAsync(() => Volatile.Read(ref statuses) >= 2);
 
         for (int index = 3; index < encoder.BlockCount; index++)
         {
@@ -306,7 +313,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
         offersHeard.Should().HaveCount(2);
         offersHeard[0].Accepted.Should().BeTrue();
         offersHeard[1].Accepted.Should().BeFalse("this station was already busy");
-        statuses.Should().BeGreaterThanOrEqualTo(
+        Volatile.Read(ref statuses).Should().BeGreaterThanOrEqualTo(
             2, "an offer is also how the sender asks for a status");
     }
 
