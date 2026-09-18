@@ -185,3 +185,27 @@ jobs:
               --notes-file /tmp/pdn-qso-relnotes.md \
               $prerelease
           fi
+
+      - name: Tell the apt repo to rebuild
+        # Last, and only after the GitHub Release has succeeded: packet-net/apt indexes
+        # whatever is on releases/latest when it runs, so dispatching before the assets exist
+        # would just make it re-index the previous release. Same publish gate as that step, so
+        # a dry run never dispatches.
+        #
+        # A HARD requirement, not fire-and-forget (Tom, 2026-09-18): if this repo cannot tell
+        # packet-net/apt about the release, the build fails rather than shipping quietly with
+        # apt left stale until its next scheduled rebuild.
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::APT_DISPATCH_TOKEN is not visible to this repo - cannot notify packet-net/apt"
+            exit 1
+          fi
+          # gh api --input - with a JSON body, not -f client_payload[...]=...: gh's -f does not
+          # do curl-style bracket nesting, so the nested object has to arrive as JSON.
+          payload=$(printf '{"event_type":"release-published","client_payload":{"repo":"%s","tag":"%s"}}' \
+            "$GITHUB_REPOSITORY" "$TAG")
+          printf '%s' "$payload" | gh api -X POST repos/packet-net/apt/dispatches --input -
