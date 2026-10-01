@@ -77,13 +77,24 @@ public static class PipeAudio
 
 /// <summary>
 /// The capture half of a pipe pair: whatever the other station wrote, paced to wall clock,
-/// with silence in the gaps.
+/// with a quiet noise floor in the gaps.
 /// </summary>
 /// <remarks>
-/// The silence is the point. A FIFO delivers nothing at all between transmissions, and a
+/// <para>
+/// The gaps are the point. A FIFO delivers nothing at all between transmissions, and a
 /// capture device that simply blocked there would freeze the receive loop, the DCD with it,
 /// and make a quiet band indistinguishable from a dead input. A sound card hands up a
-/// continuous stream that happens to be silent when nothing is on, so this does too.
+/// continuous stream that is quiet when nothing is on, so this does too.
+/// </para>
+/// <para>
+/// Quiet, not silent. This used to fill with exact zeros, which no sound card ever delivers.
+/// afsk1200's carrier detect does not let go of a carrier into digital silence, so after
+/// every frame the receiving station held its DCD for about ten seconds and every reply over
+/// a pipe pair waited that long for a channel that was in fact clear. A floor at
+/// <see cref="NoiseFloorDbfs"/> is what a quiet receiver sounds like; with it DCD drops
+/// within a few hundred milliseconds of a burst ending on every mode tried (afsk1200,
+/// bpsk300, qpsk2400, fsk9600). The burst itself still arrives exactly as it was written.
+/// </para>
 /// </remarks>
 public sealed class PipeAudioInput : IAudioInput, IDisposable
 {
@@ -93,6 +104,12 @@ public sealed class PipeAudioInput : IAudioInput, IDisposable
     private long _started;
     private bool _running;
     private long _delivered;
+    private readonly Random _noise = new();
+
+    /// <summary>The RMS level of the noise in the gaps between bursts, in dB full scale.</summary>
+    public const double NoiseFloorDbfs = -45;
+
+    private static readonly double NoiseRms = Math.Pow(10, NoiseFloorDbfs / 20);
 
     /// <summary>Opens the capture FIFO, creating it if needed.</summary>
     /// <param name="path">The FIFO to read from.</param>
@@ -169,13 +186,28 @@ public sealed class PipeAudioInput : IAudioInput, IDisposable
             SamplesFromPipe += taken;
         }
 
-        destination[taken..want].Clear();
+        FillWithNoiseFloor(destination[taken..want]);
         _delivered += want;
         return want;
     }
 
     /// <inheritdoc />
     public void Dispose() => _fifo.Dispose();
+
+    /// <summary>Gaussian noise at <see cref="NoiseFloorDbfs"/>, by the Box-Muller transform.</summary>
+    private void FillWithNoiseFloor(Span<float> destination)
+    {
+        for (int n = 0; n < destination.Length; n += 2)
+        {
+            double radius = Math.Sqrt(-2 * Math.Log(1 - _noise.NextDouble())) * NoiseRms;
+            double angle = 2 * Math.PI * _noise.NextDouble();
+            destination[n] = (float)(radius * Math.Cos(angle));
+            if (n + 1 < destination.Length)
+            {
+                destination[n + 1] = (float)(radius * Math.Sin(angle));
+            }
+        }
+    }
 
     private long Owed() =>
         (long)(_time.GetElapsedTime(_started).TotalSeconds * SampleRate) - _delivered;

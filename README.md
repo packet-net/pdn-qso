@@ -84,7 +84,7 @@ pdn-qso --config /etc/pdn-qso-test.json     a second instance with its own setti
 
 ## Two stations on one machine, no radio at all
 
-The `pipe:` device is a pair of named pipes standing in for the air, so two copies of the program on one machine hear each other. It is not a channel: no noise, no propagation, samples arrive exactly as they were written. That makes it the right way to learn the screen and to prove two ends talk, and the wrong way to measure a modem.
+The `pipe:` device is a pair of named pipes standing in for the air, so two copies of the program on one machine hear each other. It is not a channel: no propagation, and every burst arrives exactly as it was written. Between bursts the receiving end hears a quiet noise floor (-45 dBFS) rather than digital silence, as a real receiver would; without it the modems held their carrier detect for about ten seconds after every frame and each reply waited that long. That makes it the right way to learn the screen and to prove two ends talk, and the wrong way to measure a modem.
 
 In one terminal:
 
