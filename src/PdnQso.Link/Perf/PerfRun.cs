@@ -8,7 +8,7 @@ namespace PdnQso.Link.Perf;
 /// </summary>
 /// <remarks>
 /// <para>
-/// A stream run has a sender and a receiver, driven by <see cref="RunStreamSenderAsync"/> and
+/// A stream run has a sender and a receiver, driven by <see cref="RunStreamSenderAsync(IStation, TimeSpan, PerfStreamOptions, CancellationToken)"/> and
 /// <see cref="RunStreamReceiverAsync"/> on the two stations. The sender transmits
 /// <see cref="PerfStreamOptions.FrameCount"/> numbered frames, then sends one more
 /// <see cref="LinkFrameType.PerfPing"/> on the same session asking the receiver to wrap up; the
@@ -89,7 +89,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
     /// <returns>A report complete with what the far end acknowledged.</returns>
     /// <exception cref="TimeoutException">No summary arrived after
     /// <see cref="PerfStreamOptions.SummaryRetries"/> attempts.</exception>
-    public async Task<PerfReport> RunStreamSenderAsync(
+    public Task<PerfReport> RunStreamSenderAsync(
         IStation station,
         IModem modem,
         int dspRateHz,
@@ -99,15 +99,42 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
         ArgumentNullException.ThrowIfNull(station);
         ArgumentNullException.ThrowIfNull(modem);
         ArgumentNullException.ThrowIfNull(options);
-        ArgumentOutOfRangeException.ThrowIfLessThan(options.FrameCount, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.PayloadSize, PerfWire.StreamHeaderLength);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(dspRateHz, 0);
+
+        TimeSpan airTime = TimeSpan.FromSeconds(MeasureAirTimeSeconds(
+            modem, options.PayloadSize, options.TxDelayMilliseconds, dspRateHz));
+        return RunStreamSenderAsync(station, airTime, options, cancellationToken);
+    }
+
+    /// <summary>
+    /// The sending half of a stream run, for a station with no <see cref="IModem"/> to
+    /// measure a burst with - a Tait radio running its own modem - so the caller says how long
+    /// one frame takes on air instead.
+    /// </summary>
+    /// <param name="station">The sending station.</param>
+    /// <param name="frameAirTime">The air time of one stream frame of
+    /// <see cref="PerfStreamOptions.PayloadSize"/>, which the goodput is worked out against.</param>
+    /// <param name="options">How many frames, how big, how the timing runs.</param>
+    /// <param name="cancellationToken">Cancels the run.</param>
+    /// <returns>A report complete with what the far end acknowledged.</returns>
+    /// <exception cref="TimeoutException">No summary arrived.</exception>
+    public async Task<PerfReport> RunStreamSenderAsync(
+        IStation station,
+        TimeSpan frameAirTime,
+        PerfStreamOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(station);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.FrameCount, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.PayloadSize, PerfWire.StreamHeaderLength);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(frameAirTime, TimeSpan.Zero);
 
         DateTimeOffset start = _time.GetUtcNow();
         PowerReading power = await station.Power.ReadAsync(cancellationToken).ConfigureAwait(false);
         byte session = options.Session ?? RandomSession();
-        double airTimeSeconds = MeasureAirTimeSeconds(
-            modem, options.PayloadSize, options.TxDelayMilliseconds, dspRateHz);
+        double airTimeSeconds = frameAirTime.TotalSeconds;
 
         for (int i = 0; i < options.FrameCount; i++)
         {
@@ -119,7 +146,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
                 .ConfigureAwait(false);
 
             Progress?.Invoke(new PerfReport(
-                "stream", modem.Mode, options.CentreHz, station.DeviceName, power,
+                "stream", station.Mode, options.CentreHz, station.DeviceName, power,
                 FramesSent: i + 1, FramesHeard: 0, FramesDelivered: 0, FramesLost: 0, Duplicates: 0,
                 FrameErrorRate: 0, GoodputBytesPerSecond: 0, Elapsed: _time.GetUtcNow() - start,
                 MeanSnrDb: null, WorstSnrDb: null, LastSnrDb: null, MeanRttMs: null, WorstRttMs: null,
@@ -170,7 +197,7 @@ public sealed class PerfRun(TimeProvider? timeProvider = null)
 
         double goodput = options.PayloadSize * heard.Heard / (airTimeSeconds * options.FrameCount);
         var report = new PerfReport(
-            "stream", modem.Mode, options.CentreHz, station.DeviceName, power,
+            "stream", station.Mode, options.CentreHz, station.DeviceName, power,
             FramesSent: options.FrameCount,
             FramesHeard: heard.Heard,
             FramesDelivered: heard.Heard,

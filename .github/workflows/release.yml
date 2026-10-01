@@ -136,6 +136,9 @@ jobs:
             grep -q 'usr/share/doc/pdn-qso/copyright$' <<<"$listing"
             # The frame log is SQLite, and its native shim is published loose beside the bundle.
             grep -q 'usr/lib/pdn-qso/libe_sqlite3\.so$' <<<"$listing"
+            # The Tait radios are driven over a serial port, and System.IO.Ports needs its native
+            # shim beside the bundle or the first open of a tait: device fails.
+            grep -q 'usr/lib/pdn-qso/libSystem\.IO\.Ports\.Native\.so$' <<<"$listing"
             # A user-run tool ships no unit file and seeds no config.
             if grep -q 'systemd\|etc/pdn-qso' <<<"$listing"; then
               echo "::error::this .deb looks like a service - pdn-qso is a user-run tool"

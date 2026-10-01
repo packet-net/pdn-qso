@@ -33,9 +33,6 @@ public sealed record CommandLine
     /// <summary>Print the version and exit.</summary>
     public bool ShowVersion { get; init; }
 
-    /// <summary>Fetch the current release and install it over this one, then exit.</summary>
-    public bool Upgrade { get; init; }
-
     /// <summary>Why the command line was refused, or null when it was not.</summary>
     public string? Error { get; init; }
 
@@ -69,9 +66,6 @@ public sealed record CommandLine
                     break;
                 case "--monitor-only":
                     parsed = parsed with { MonitorOnly = true };
-                    break;
-                case "--upgrade":
-                    parsed = parsed with { Upgrade = true };
                     break;
                 case "--config":
                     if (!TakeValue(args, ref i, name, inlineValue, out string? config, out CommandLine? configFailure))
@@ -137,22 +131,21 @@ public sealed record CommandLine
     /// <summary>The <c>--help</c> text.</summary>
     public static string HelpText(string version) =>
         $"""
-         pdn-qso {version} - interactive two-way testing over pdn-soundmodem
+         pdn-qso {version} - interactive two-way testing over pdn-soundmodem and Tait radios
 
            pdn-qso                     start the terminal UI
            pdn-qso --monitor-only      start it with the transmitter locked out
-           pdn-qso --upgrade           install the current release over this one
            pdn-qso --version           print the version and exit
 
          Options:
            --config <path>     use this config file instead of {QsoConfig.DefaultPath}
            --device <string>   an ALSA card (default, plughw:1,0), flex:<radio>[:slice][@station],
-                               ubersdr:<instance>, or pipe:<in>,<out>[,<rate>]
-           --mode <mode>       a modem mode, e.g. bpsk300, qpsk2400, ms110d-wn13
+                               ubersdr:<instance>, pipe:<in>,<out>[,<rate>], or a Tait
+                               TM8100/TM8200 on its serial port, tait:<port>[,<baud>]
+           --mode <mode>       a modem mode, e.g. bpsk300, qpsk2400, ms110d-wn13; on a Tait,
+                               tait-ffsk or tait-sdm, the radio's own modems
            --callsign <call>   CALL or CALL-SSID
            --monitor-only      never transmit: listen, show and log only
-           --upgrade           fetch the current release's package for this machine,
-                               check it against the release's checksums and install it
            -h, --help          this
            -V, --version       the version
 

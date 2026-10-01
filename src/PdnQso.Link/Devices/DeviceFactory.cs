@@ -58,6 +58,10 @@ public static class DeviceFactory
                 await CreateFlexAsync(flex, sampleRate, options, cancellationToken).ConfigureAwait(false),
             UberSdrDeviceString uber =>
                 await CreateUberSdrAsync(uber, sampleRate, options, cancellationToken).ConfigureAwait(false),
+            TaitDeviceString => throw new ArgumentException(
+                $"'{device.Text}' is a Tait radio, which has no audio to open: it runs the tait-* "
+                + "modes as a station of its own",
+                nameof(device)),
             _ => throw new ArgumentException($"'{device.Text}' is not a device this tool opens", nameof(device)),
         };
     }

@@ -103,6 +103,8 @@ public static class SettingsDialog
         private readonly TextField _pttGpio;
         private readonly TextField _pttSerialLine;
         private readonly CheckBox _lowerSideband;
+        private readonly TextField _taitFfskBaud;
+        private readonly TextField _taitSdmDestination;
 
         private readonly CheckBox _identEnabled;
         private readonly TextField _identCallsign;
@@ -140,6 +142,8 @@ public static class SettingsDialog
             _pttGpio = Add(parent, 1, ref left, "PTT GPIO", Text(config.PttGpio));
             _pttSerialLine = Add(parent, 1, ref left, "PTT line rts/dtr", config.PttSerialLine);
             _lowerSideband = Check(parent, 1, ref left, "Lower sideband", config.LowerSideband);
+            _taitFfskBaud = Add(parent, 1, ref left, "Tait FFSK baud", Text(config.TaitFfskBaud));
+            _taitSdmDestination = Add(parent, 1, ref left, "Tait SDM to", config.TaitSdmDestination);
 
             int right = 0;
             _identEnabled = Check(parent, SecondColumn, ref right, "Ident enabled", config.IdentEnabled);
@@ -198,6 +202,10 @@ public static class SettingsDialog
                 PttGpio = Integer(_pttGpio, "PTT GPIO", current.PttGpio, badNumbers),
                 PttSerialLine = _pttSerialLine.Text.Trim().ToLowerInvariant(),
                 LowerSideband = _lowerSideband.Value == CheckState.Checked,
+                TaitFfskBaud = Integer(_taitFfskBaud, "Tait FFSK baud", current.TaitFfskBaud, badNumbers),
+                TaitSdmDestination = _taitSdmDestination.Text.Trim().ToUpperInvariant() is { Length: > 0 } sdmTo
+                    ? sdmTo
+                    : current.TaitSdmDestination,
                 IdentEnabled = _identEnabled.Value == CheckState.Checked,
                 IdentCallsign = Empty(_identCallsign)?.ToUpperInvariant(),
                 IdentIntervalMinutes = Integer(

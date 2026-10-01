@@ -6,6 +6,7 @@ using PdnQso.Link;
 using PdnQso.Link.Chat;
 using PdnQso.Link.Devices;
 using PdnQso.Link.Fountain;
+using PdnQso.Link.Tait;
 using PdnQso.Link.Transfer;
 
 namespace PdnQso.Config;
@@ -31,13 +32,14 @@ namespace PdnQso.Config;
 /// </remarks>
 public sealed record QsoConfig
 {
-    /// <summary>The device string: an ALSA card, <c>flex:</c>, <c>ubersdr:</c> or <c>pipe:</c>.</summary>
+    /// <summary>The device string: an ALSA card, <c>flex:</c>, <c>ubersdr:</c>, <c>pipe:</c> or <c>tait:</c>.</summary>
     public string Device { get; init; } = "default";
 
     /// <summary>This station's callsign, <c>CALL</c> or <c>CALL-SSID</c>.</summary>
     public string Callsign { get; init; } = "";
 
-    /// <summary>The modem mode, from <c>ModemCatalog.AllModes</c>.</summary>
+    /// <summary>The modem mode, from <c>ModemCatalog.AllModes</c>, or one of the Tait radio's
+    /// own (<see cref="TaitModes.All"/>) on a <c>tait:</c> device.</summary>
     public string Mode { get; init; } = "bpsk300";
 
     /// <summary>The modem's audio centre in Hz; null takes the mode's own default.</summary>
@@ -149,6 +151,22 @@ public sealed record QsoConfig
 
     /// <summary>Drive the sound card's playback mixer as the transmit power control.</summary>
     public bool UseMixerPower { get; init; } = true;
+
+    /// <summary>
+    /// A Tait radio's FFSK over-air rate, 1200 or 2400, as it is programmed. Only used to
+    /// estimate air time; the radio sets the rate itself, and both ends must match.
+    /// </summary>
+    public int TaitFfskBaud { get; init; } = 2400;
+
+    /// <summary>
+    /// The SDM data identity <c>tait-sdm</c> frames are addressed to: eight characters, each
+    /// a letter, digit or <c>*</c> for any. All wildcards reaches every radio.
+    /// </summary>
+    public string TaitSdmDestination { get; init; } = TaitSettings.AllRadios;
+
+    /// <summary>True when the mode is one a Tait radio runs itself.</summary>
+    [JsonIgnore]
+    public bool IsTaitMode => TaitModes.IsTait(Mode);
 
     /// <summary>
     /// This user's home directory. <c>DoNotVerify</c> throughout, like every other path here:
@@ -299,7 +317,41 @@ public sealed record QsoConfig
             problems.Add($"Device: {deviceError}");
         }
 
-        if (!ModemCatalog.IsKnown(Mode))
+        if (TaitModes.IsTait(Mode))
+        {
+            if (device is not null and not TaitDeviceString)
+            {
+                problems.Add(
+                    $"Mode: {Mode} is a Tait radio's own modem, so the device has to be the "
+                    + "radio: tait:/dev/ttyUSB0.");
+            }
+
+            if (AudioCentreHz is not null)
+            {
+                problems.Add($"Audio centre: {Mode} has no audio. Leave it blank.");
+            }
+
+            if (TaitFfskBaud is not (1200 or 2400))
+            {
+                problems.Add("Tait FFSK rate: the radio's FFSK modem runs at 1200 or 2400.");
+            }
+
+            if (TaitSdmDestination is null
+                || TaitSdmDestination.Length != 8
+                || !TaitSdmDestination.All(c => char.IsAsciiLetterUpper(c) || char.IsAsciiDigit(c) || c == '*'))
+            {
+                problems.Add(
+                    "Tait SDM destination: eight capital letters, digits or *, with * matching any "
+                    + "character. ******** reaches every radio.");
+            }
+        }
+        else if (device is TaitDeviceString)
+        {
+            problems.Add(
+                $"Mode: a Tait radio runs its own modems, {string.Join(" or ", TaitModes.All)}, "
+                + $"and not {Mode}.");
+        }
+        else if (!ModemCatalog.IsKnown(Mode))
         {
             string[] near = ModemCatalog.NearestModes(Mode);
             problems.Add(
@@ -462,18 +514,60 @@ public sealed record QsoConfig
     /// <see cref="ChatOptions"/> keeps the library's own defaults, which are the ones the
     /// hermetic tests pin.
     /// </remarks>
-    public ChatOptions ToChatOptions() => new()
+    /// <remarks>
+    /// On a Tait mode the longest line is what one frame of it carries, which on SDM is a
+    /// good deal shorter than the usual limit.
+    /// </remarks>
+    public ChatOptions ToChatOptions()
     {
-        AckTimeoutBase = TimeSpan.FromMilliseconds(Math.Max(1, AckTimeoutMs)),
-        MaxRetries = MaxRetries,
-        StepWaveform = StepWaveform,
-    };
+        var options = new ChatOptions
+        {
+            AckTimeoutBase = TimeSpan.FromMilliseconds(Math.Max(1, AckTimeoutMs)),
+            MaxRetries = MaxRetries,
+            StepWaveform = StepWaveform,
+        };
+
+        return IsTaitMode
+            ? options with
+            {
+                MaxTextBytes = Math.Min(
+                    options.MaxTextBytes, TaitModes.MaxPayloadBytes(Mode) - ChatPayload.HeaderLength),
+            }
+            : options;
+    }
 
     /// <summary>The file transfer options this config asks for.</summary>
-    public FileTransferOptions ToFileTransferOptions() => new()
+    /// <remarks>
+    /// A fountain block is sized to fill one frame of the mode, which on SDM is about a tenth
+    /// of the usual.
+    /// </remarks>
+    public FileTransferOptions ToFileTransferOptions()
     {
-        Fountain = LtParameters.Default with { C = FountainC, Delta = FountainDelta },
-    };
+        var options = new FileTransferOptions
+        {
+            Fountain = LtParameters.Default with { C = FountainC, Delta = FountainDelta },
+        };
+
+        return IsTaitMode
+            ? options with
+            {
+                BlockSize = Math.Min(
+                    options.BlockSize, TaitModes.MaxPayloadBytes(Mode) - FileSymbolPayload.HeaderLength),
+            }
+            : options;
+    }
+
+    /// <summary>The Tait radio this config names, or null when the device is not one.</summary>
+    public TaitSettings? ToTaitSettings() =>
+        DeviceString.TryParse(Device, out DeviceString? device, out _) && device is TaitDeviceString tait
+            ? new TaitSettings
+            {
+                PortName = tait.Port,
+                BaudRate = tait.Baud,
+                FfskBaud = TaitFfskBaud,
+                SdmDestination = TaitSdmDestination,
+            }
+            : null;
 
     /// <summary>The station options this config asks for.</summary>
     public StationOptions ToStationOptions() => new()

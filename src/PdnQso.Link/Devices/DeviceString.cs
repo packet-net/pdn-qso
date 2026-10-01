@@ -19,11 +19,18 @@ public enum DeviceKind
 
     /// <summary>Two named pipes, for two instances on one machine: <c>pipe:&lt;in&gt;,&lt;out&gt;[,&lt;rate&gt;]</c>.</summary>
     Pipe,
+
+    /// <summary>
+    /// A Tait TM8100/TM8200 on its CCDI serial port, running its own modem:
+    /// <c>tait:&lt;port&gt;[,&lt;baud&gt;]</c>. No audio; it goes with the <c>tait-*</c> modes.
+    /// </summary>
+    Tait,
 }
 
 /// <summary>
 /// A parsed <c>--device</c> string, in the same four forms pdn-soundmodem's daemon accepts, so
-/// a string that works there works here and an operator has one thing to learn.
+/// a string that works there works here and an operator has one thing to learn, plus a fifth,
+/// <c>tait:</c>, for a radio whose modem is built in and which the daemon has no use for.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -46,7 +53,7 @@ public enum DeviceKind
 /// <param name="Text">The device string as the operator wrote it.</param>
 public abstract record DeviceString(string Text)
 {
-    /// <summary>Which of the four forms this is.</summary>
+    /// <summary>Which of the forms this is.</summary>
     public abstract DeviceKind Kind { get; }
 
     /// <summary>False for a receive-only device.</summary>
@@ -80,8 +87,8 @@ public abstract record DeviceString(string Text)
         if (string.IsNullOrWhiteSpace(text))
         {
             error = "no device. It is one of: an ALSA card (default, plughw:1,0), "
-                + "flex:<radio>[:slice][@station], ubersdr:<instance>, or "
-                + "pipe:<in>,<out>[,<rate>].";
+                + "flex:<radio>[:slice][@station], ubersdr:<instance>, "
+                + "pipe:<in>,<out>[,<rate>], or tait:<port>[,<baud>].";
             return false;
         }
 
@@ -121,11 +128,48 @@ public abstract record DeviceString(string Text)
             return TryParsePipe(trimmed, out device, out error);
         }
 
+        if (trimmed.StartsWith(TaitPrefix, StringComparison.Ordinal))
+        {
+            return TryParseTait(trimmed, out device, out error);
+        }
+
         device = new AlsaDeviceString(trimmed);
         return true;
     }
 
     private const string PipePrefix = "pipe:";
+
+    private const string TaitPrefix = "tait:";
+
+    private static bool TryParseTait(
+        string text,
+        [NotNullWhen(true)] out DeviceString? device,
+        [NotNullWhen(false)] out string? error)
+    {
+        device = null;
+        error = null;
+
+        string[] parts = text[TaitPrefix.Length..].Split(',');
+        if (parts.Length is < 1 or > 2 || string.IsNullOrWhiteSpace(parts[0]))
+        {
+            error = $"\"{text}\" is not a Tait radio. It is tait:<port>[,<baud>] - the radio's "
+                + "CCDI serial port, e.g. tait:/dev/ttyUSB0, and optionally the rate it is "
+                + "programmed for (28800 by default).";
+            return false;
+        }
+
+        int baud = TaitDeviceString.DefaultBaud;
+        if (parts.Length == 2
+            && (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out baud)
+                || baud <= 0))
+        {
+            error = $"\"{parts[1]}\" is not a serial rate";
+            return false;
+        }
+
+        device = new TaitDeviceString(text, parts[0].Trim(), baud);
+        return true;
+    }
 
     private static bool TryParsePipe(
         string text,
@@ -231,5 +275,24 @@ public sealed record PipeDeviceString(string Text, string In, string Out, int Ra
     public override DeviceKind Kind => DeviceKind.Pipe;
 
     /// <summary>True: the other end of the pipe is listening.</summary>
+    public override bool CanTransmit => true;
+}
+
+/// <summary>
+/// A Tait TM8100/TM8200 on its CCDI serial port. The radio is the modem as well as the
+/// transmitter, so this goes only with the <c>tait-*</c> modes and they only with it.
+/// </summary>
+/// <param name="Text">The string as written.</param>
+/// <param name="Port">The serial port, e.g. <c>/dev/ttyUSB0</c>.</param>
+/// <param name="Baud">The CCDI serial rate, 28800 unless the string said otherwise.</param>
+public sealed record TaitDeviceString(string Text, string Port, int Baud) : DeviceString(Text)
+{
+    /// <summary>The CCDI rate a Tait radio ships programmed with.</summary>
+    public const int DefaultBaud = 28_800;
+
+    /// <inheritdoc />
+    public override DeviceKind Kind => DeviceKind.Tait;
+
+    /// <summary>True: the radio keys itself.</summary>
     public override bool CanTransmit => true;
 }

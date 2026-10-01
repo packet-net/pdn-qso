@@ -45,6 +45,17 @@ One `IPowerControl` in the station, implemented per device: **Flex** sets `rfpow
 
 `Station` owns one device (input + output + PTT, or input only for UberSDR), one `IModem`, the busy detector, the transmit queue (one frame at a time, DCD-respecting, TX delay from settings, ident per the library's `StationIdentifier` rules), and the frame-log writer. Everything above it talks in link frames; everything below it is the library. Receive is always on; the modem is autobaud where the waveform allows.
 
+### 5a. A Tait radio is a station without a soundmodem
+
+A Tait TM8100/TM8200 has two modems of its own, and on a `tait:<port>[,<baud>]` device the station is a `TaitStation` (`src/PdnQso.Link/Tait/`) over one of them instead of a `Station` over audio. It honours the same `IStation` contract, so chat, file and perf run unchanged; what it cannot offer it says so: `Modem` is null (`IStation.Modem` is nullable for this), power is `NoPowerControl`, and there is no Morse ident because every frame carries the callsign as its AX.25 source. Received frames carry a `FrameQuality` with the mode and length and nothing else, since the radio reports no SNR for data.
+
+The radio work is the packages', never reimplemented here:
+
+- **`tait-ffsk`** is `TaitFfskLink` over packet.net's `TaitTransparentTransport` (`Packet.Ax25.Radio.Tait`): Transparent mode, SLIP framing, stale-Transparent recovery on open and the `+++` escape on close. A send is `SendAwaitingCompletionAsync`, which waits out the transport's model of the air time, so a send ends when the frame is off the air and the chat ARQ's patience, which it measures from how long a send took, stays honest. No carrier sense: the control channel is the byte pipe.
+- **`tait-sdm`** is `TaitSdmLink` over `M0LTE.Tait.Ccdi`'s binary SDM. The radio stays in Command mode, so PROGRESS carrier sense works and the station waits out a busy channel. The radio answers a send before it is on air, so the link waits out its own air-time estimate after. Frames go to a configurable eight-character data identity, all wildcards by default; delivery receipts are ignored, because this tool's protocols acknowledge what they need to and a wildcard send gets none.
+
+The one piece of SDM handling that is this repo's own is `SdmFrameCodec`, because the driver refuses four byte values in a binary SDM (CR, LF, XON, XOFF) that an AX.25 frame can contain. Every byte is XORed with a key chosen from the 252 legal values to leave the fewest bytes on a refused value or the escape byte, and those few are escaped. Each frame byte rules out at most five keys, so the best key leaves at most 5n/252 escapes: a 125-byte frame is at most 128 bytes on air, the SDM limit, whatever it contains. `QsoConfig` cuts the chat line and file block to fit on `tait-sdm`; anything else too big is refused by the station with the limit in the message.
+
 ## 6. The UI
 
 Terminal.Gui 2.4.x. Layout: a status bar (device, mode, centre, power, PTT and DCD lamps, last SNR, correspondent); the **Monitor pane, always on screen** (every frame heard, scrolling, with callsigns, modem, SNR, offset and quality - full height when no activity is selected, a lower pane otherwise); a main pane for the active activity (Chat, File, Perf); F-keys for switching activity and for the settings dialog. Settings (all in the dialog, persisted to `~/.config/pdn-qso/config.json`): device string, callsign, modem mode, audio centre, TX delay ms, audio in/out gain, power (watts on Flex with the read-back beside it; mixer percentage on a sound card), ident interval and callsign, ARQ timeouts and retries, fountain c/delta, frame-log path. First run, with no config: a wizard that lists ALSA cards, discovers Flex radios, or takes an UberSDR host, then the callsign, then the mode.
@@ -105,39 +116,22 @@ activity that focuses its own input as it is built focuses nothing. The same app
 up: in Terminal.Gui a view whose container cannot be focused is unreachable from the keyboard
 however focusable it is itself, so the panes and each activity's root view set `CanFocus`.
 
-## 6c. Packaging and the upgrade
+## 6c. Packaging and updates
 
 The release attaches one `.deb` per architecture under a name with **no version in it**:
 `pdn-qso_amd64.deb`, `pdn-qso_arm64.deb`, `pdn-qso_armhf.deb`. The version is in the package's
-own control data, where dpkg reads it, and in the release title. That makes
-`releases/latest/download/pdn-qso_<arch>.deb` a URL that always points at the current release
-and never has to be rewritten, which is what a README, a wiki page, and `pdn-qso --upgrade` can
-all rely on.
+own control data, where dpkg reads it, and in the release title.
 
-`--upgrade` is the whole update story: there is no apt repository to add, no key to trust and
-no background check. It
+Updates go through apt. `release.yml` ends by sending a `release-published` dispatch to
+`packet-net/apt`, which mirrors every `.deb` on each listed repo's `releases/latest` into its
+pool, signs the index and publishes it; pdn-qso is in that repo's `sources.txt`. A release
+marked prerelease (any version with a hyphen, `0.3.0-rc1`) is invisible to `releases/latest`,
+so an rc never reaches apt. The dispatch is a hard requirement: if it cannot be sent, the
+release job fails rather than leaving apt stale until the daily rebuild.
 
-1. maps this **process's** architecture (not `dpkg --print-architecture`, which would name the
-   kernel's) to a package name;
-2. asks GitHub for `latest/download/<name>` and reads the tag out of the **first** redirect.
-   GitHub answers with a 302 to `releases/download/<tag>/<name>` and only then with a second
-   redirect to a signed URL on another host that carries no tag at all, so the first hop is
-   where the version is, and the second hop's URL is the one to download: the bytes fetched are
-   the bytes of the release just identified even if another is published in between. No API
-   call, no token, no rate limit. GitHub's "latest" is the latest release that is not marked as
-   a prerelease, and `release.yml` marks any version with a hyphen in it (`0.3.0-rc1`) as one,
-   so an rc is published, is downloadable by its own URL, and is never what `--upgrade` offers;
-3. stops if the versions match, and stops if the running copy is ahead (a build from source
-   says `1.0.0`, because that is what the SDK stamps when no tag named it);
-4. downloads the package and the release's own `SHA256SUMS` and refuses to install anything
-   that is not in that file or does not match it;
-5. installs with `apt-get install --yes --reinstall`, through `sudo` when not root, because the
-   package depends on `libasound2 | libasound2t64` and an alternation is exactly what dpkg
-   cannot resolve on its own. With neither root nor sudo it leaves the download in place, prints
-   the command, and exits 1.
-
-Everything above except the network and the process call is in `ReleaseAsset`, which is pure
-and tested; `SelfUpgrade` is the thin shell around it.
+There used to be a `pdn-qso --upgrade` that fetched and installed the current release itself.
+It was removed once the apt repository existed: two update paths for one package is one too
+many, and apt is the one every other packet-net tool uses.
 
 ## 6d. Time in the tests
 

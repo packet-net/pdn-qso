@@ -68,18 +68,12 @@ public class CommandLineTests
     }
 
     [Fact]
-    public void Upgrade_Is_A_Switch_And_Takes_No_Value()
+    public void Upgrade_Is_Not_An_Argument_Any_More()
     {
-        CommandLine.Parse(["--upgrade"]).Upgrade.Should().BeTrue();
-        CommandLine.Parse([]).Upgrade.Should().BeFalse();
-    }
-
-    [Fact]
-    public void The_Help_Lists_Upgrade()
-    {
-        // A command nobody is told about is a command nobody runs, and this one is how the
-        // person handed the tool gets the next version.
-        CommandLine.HelpText("0.3.0").Should().Contain("--upgrade");
+        // Updates come from the packet-net apt repository now, through apt like everything
+        // else on the machine. A leftover script calling --upgrade is told so, not ignored.
+        CommandLine.Parse(["--upgrade"]).Error.Should().Contain("unknown argument");
+        CommandLine.HelpText("0.3.0").Should().NotContain("--upgrade");
     }
 
     [Fact]
