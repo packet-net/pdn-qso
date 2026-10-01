@@ -52,8 +52,17 @@ public sealed class HeadlessSession
     /// <summary>The chat session a respond or chat run is using, for a test to watch.</summary>
     public ChatSession? Chat { get; private set; }
 
-    /// <summary>The perf responder a respond run is using, for a test to watch.</summary>
-    public PerfRun? Responder { get; private set; }
+    /// <summary>
+    /// True once a respond run is answering everything it answers: chat started, and both the
+    /// ping responder and a stream receiver listening. Until then a far end that starts at
+    /// once can send into a gap, which is what a test, or a script, waits on this for.
+    /// </summary>
+    public bool Ready =>
+        _chatStarted && _pong?.Listening == true && _streams?.Listening == true;
+
+    private volatile bool _chatStarted;
+    private PerfRun? _pong;
+    private PerfRun? _streams;
 
     /// <summary>Runs the command.</summary>
     /// <param name="command">What to do.</param>
@@ -103,12 +112,22 @@ public sealed class HeadlessSession
         Chat = chat;
         chat.MessageReceived += message => Say($"chat from {message.Source}: {message.Text}");
         chat.Start();
+        _chatStarted = true;
 
-        var perf = new PerfRun(_time);
-        Responder = perf;
+        // Two runs, not one shared, so that each says for itself whether it is listening.
+        _pong = new PerfRun(_time);
+        _streams = new PerfRun(_time);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        Task pong = perf.RunPongResponderAsync(_station, stop.Token);
-        Task streams = Task.Run(() => AnswerStreamsAsync(perf, stop.Token), CancellationToken.None);
+        Task pong = _pong.RunPongResponderAsync(_station, stop.Token);
+        Task streams = Task.Run(() => AnswerStreamsAsync(_streams, stop.Token), CancellationToken.None);
+
+        // Said once it is true, so a script can start the far end on seeing it.
+        while (!Ready && !pong.IsCompleted && !streams.IsCompleted && !cancellationToken.IsCancellationRequested)
+        {
+            await Task.Yield();
+        }
+
+        Say("ready");
 
         try
         {

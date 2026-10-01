@@ -102,7 +102,7 @@ For scripts, tests over ssh, and a lab with two radios on one machine, pdn-qso r
 
 | | |
 |---|---|
-| `--respond` | answer chat lines, pings and streams, printing what is heard; runs until Ctrl+C |
+| `--respond` | answer chat lines, pings and streams, printing what is heard; prints `ready` once it is answering, and runs until Ctrl+C |
 | `--listen` | print what is heard, never transmit |
 | `--for <seconds>` | with `--respond` or `--listen`, stop after this long |
 | `--ping <n>` | ping the far end `n` times, report round trips and loss |

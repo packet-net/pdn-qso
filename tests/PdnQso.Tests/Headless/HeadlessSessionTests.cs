@@ -50,8 +50,7 @@ public class HeadlessSessionTests
         public async Task<Task<int>> StartResponderAsync()
         {
             Task<int> responding = Responder.RunAsync(new HeadlessCommand(HeadlessAction.Respond), StopResponder.Token);
-            await VirtualTime.WaitForAsync(() =>
-                responding.IsCompleted || (Responder.Chat is not null && Responder.Responder?.Listening == true));
+            await VirtualTime.WaitForAsync(() => responding.IsCompleted || Responder.Ready);
             return responding;
         }
 
