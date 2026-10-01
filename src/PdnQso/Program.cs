@@ -9,8 +9,8 @@ using System.Runtime.InteropServices;
 using Packet.SoundModem.Modems;
 using PdnQso;
 using PdnQso.Config;
+using PdnQso.Headless;
 using PdnQso.Ui;
-using PdnQso.Upgrade;
 using Terminal.Gui.App;
 using Terminal.Gui.Input;
 using Terminal.Gui.Views;
@@ -48,20 +48,6 @@ if (command.ShowHelp)
     return 0;
 }
 
-if (command.Upgrade)
-{
-    // Before any config is read and long before a station comes up: this replaces the program
-    // on disc and has nothing to do with the radio.
-    using var upgrading = new CancellationTokenSource();
-    Console.CancelKeyPress += (_, e) =>
-    {
-        e.Cancel = true;
-        upgrading.Cancel();
-    };
-
-    return await SelfUpgrade.RunAsync(version, Console.WriteLine, upgrading.Token);
-}
-
 string configPath = command.ResolvedConfigPath;
 QsoConfig? onDisk;
 try
@@ -73,6 +59,12 @@ catch (Exception e) when (e is InvalidDataException or IOException or Unauthoriz
     // Refusing to start beats writing a fresh default over somebody's hand-edited file.
     Console.Error.WriteLine($"pdn-qso: {e.Message}");
     return 2;
+}
+
+if (command.Headless is HeadlessCommand headless)
+{
+    // No screen and no wizard: what is on disk, or the defaults, with the command line on top.
+    return await HeadlessHost.RunAsync(command.ApplyTo(onDisk ?? new QsoConfig()), headless, command.MonitorOnly);
 }
 
 // Ctrl+Q, not Terminal.Gui's default of Esc: Esc is the key an operator hits to back out of a

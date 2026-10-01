@@ -9,6 +9,13 @@
          watts read back). AGPL-3.0, and this repo is AGPL, so nothing to weigh. -->
     <PackageVersion Include="M0LTE.Flex" Version="0.14.1" />
 
+    <!-- The two modems built into a Tait TM8100/TM8200, for a station that has no audio path
+         at all. M0LTE.Tait.Ccdi is the radio's CCDI driver, which carries Short Data Messages;
+         Packet.Ax25.Radio.Tait (from packet-net/packet.net) is AX.25 over the radio's FFSK
+         modem in Transparent mode, built on it. Both AGPL-3.0-or-later. -->
+    <PackageVersion Include="M0LTE.Tait.Ccdi" Version="0.2.0" />
+    <PackageVersion Include="Packet.Ax25.Radio.Tait" Version="0.54.0" />
+
     <!-- The frame log's store: the daemon writes SQLite, and Monitor writes the same schema
          so the existing tooling can read what this tool captured. MIT. -->
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />

@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using PdnQso.Link;
+using PdnQso.Link.Tait;
 using PdnQso.Link.Perf;
 using Terminal.Gui.App;
 using Terminal.Gui.ViewBase;
@@ -165,12 +166,22 @@ public sealed class PerfActivity : IActivityView
                 PerfReport report = procedure == PerfProcedure.Ping
                     ? await run.RunPingAsync(
                         station, _model.ToPingOptions(settings.CentreHz), token).ConfigureAwait(false)
-                    : await run.RunStreamSenderAsync(
-                        station,
-                        station.Modem,
-                        settings.DspRateHz,
-                        _model.ToStreamOptions(settings.TxDelayMilliseconds, settings.CentreHz),
-                        token).ConfigureAwait(false);
+                    : station is TaitStation tait
+                        // No modem of ours to measure a burst with: the radio is the modem, so
+                        // the link's own estimate of a frame's air time stands in.
+                        ? await run.RunStreamSenderAsync(
+                            station,
+                            tait.EstimateAirTime(
+                                LinkFrame.HeaderLength + LinkFrame.InfoHeaderLength + _model.PayloadSize),
+                            _model.ToStreamOptions(settings.TxDelayMilliseconds, settings.CentreHz),
+                            token).ConfigureAwait(false)
+                        : await run.RunStreamSenderAsync(
+                            station,
+                            station.Modem ?? throw new InvalidOperationException(
+                                $"{station.Mode} has no modem to measure air time with"),
+                            settings.DspRateHz,
+                            _model.ToStreamOptions(settings.TxDelayMilliseconds, settings.CentreHz),
+                            token).ConfigureAwait(false);
 
                 _app.Invoke(() => _log($"perf: {PerfActivityModel.Name(procedure)} finished, "
                     + $"{report.FramesHeard} of {report.FramesSent} heard"));

@@ -1,6 +1,7 @@
 using PdnQso.Config;
 using PdnQso.Link.Chat;
 using PdnQso.Link.Devices;
+using PdnQso.Link.Tait;
 using PdnQso.Link.Transfer;
 
 namespace PdnQso.Tests;
@@ -322,5 +323,98 @@ public class QsoConfigTests : IDisposable
         read.DownloadDirectory.Should().BeNull();
         read.ResolvedDownloadDirectory.Should().Be(QsoConfig.DefaultDownloadDirectory);
         read.PerfCsvPath.Should().BeNull();
+    }
+
+    private static QsoConfig Tait(string mode = TaitModes.Sdm) => new()
+    {
+        Device = "tait:/dev/ttyUSB0",
+        Callsign = "M0LTE-7",
+        Mode = mode,
+    };
+
+    [Theory]
+    [InlineData(TaitModes.Ffsk)]
+    [InlineData(TaitModes.Sdm)]
+    public void A_Tait_Radio_On_One_Of_Its_Own_Modems_Will_Start(string mode)
+    {
+        Tait(mode).Validate().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_Tait_Mode_On_A_Sound_Card_Is_Refused_Because_The_Card_Has_No_Such_Modem()
+    {
+        (Good() with { Mode = TaitModes.Ffsk, AudioCentreHz = null }).Validate()
+            .Should().ContainSingle(p => p.Contains("tait:/dev/ttyUSB0"));
+    }
+
+    [Fact]
+    public void A_Soundmodem_Mode_On_A_Tait_Radio_Is_Refused_With_The_Two_It_Can_Run()
+    {
+        (Tait() with { Mode = "bpsk300" }).Validate()
+            .Should().ContainSingle(p => p.Contains("tait-ffsk or tait-sdm"));
+    }
+
+    [Fact]
+    public void A_Tait_Mode_Takes_No_Audio_Centre()
+    {
+        (Tait() with { AudioCentreHz = 1500 }).Validate()
+            .Should().ContainSingle(p => p.StartsWith("Audio centre", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("PDN0001")]
+    [InlineData("pdn00001")]
+    [InlineData("PDN-0001")]
+    public void An_Sdm_Destination_That_Is_Not_Eight_Of_The_Radios_Characters_Is_Refused(string destination)
+    {
+        (Tait() with { TaitSdmDestination = destination }).Validate()
+            .Should().ContainSingle(p => p.StartsWith("Tait SDM destination", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void An_Ffsk_Rate_The_Radio_Does_Not_Have_Is_Refused()
+    {
+        (Tait() with { TaitFfskBaud = 9600 }).Validate()
+            .Should().ContainSingle(p => p.StartsWith("Tait FFSK rate", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void On_Sdm_A_Chat_Line_And_A_File_Block_Are_Cut_To_What_One_Message_Carries()
+    {
+        QsoConfig config = Tait(TaitModes.Sdm);
+
+        int payload = SdmFrameCodec.MaxFrameBytes - 18;
+        config.ToChatOptions().MaxTextBytes.Should().Be(payload - 2);
+        config.ToFileTransferOptions().BlockSize.Should().Be(payload - 4);
+        config.ToFileTransferOptions().Validate();
+    }
+
+    [Fact]
+    public void On_Ffsk_The_Usual_Limits_Stand()
+    {
+        QsoConfig config = Tait(TaitModes.Ffsk);
+
+        config.ToChatOptions().MaxTextBytes.Should().Be(new ChatOptions().MaxTextBytes);
+        config.ToFileTransferOptions().BlockSize.Should().Be(LinkCapacity.MaxBlockSize);
+    }
+
+    [Fact]
+    public void The_Tait_Settings_Come_From_The_Device_String_And_The_Two_Tait_Fields()
+    {
+        TaitSettings? settings = (Tait() with
+        {
+            Device = "tait:/dev/ttyUSB1,19200",
+            TaitFfskBaud = 1200,
+            TaitSdmDestination = "PDN00002",
+        }).ToTaitSettings();
+
+        settings.Should().BeEquivalentTo(new TaitSettings
+        {
+            PortName = "/dev/ttyUSB1",
+            BaudRate = 19200,
+            FfskBaud = 1200,
+            SdmDestination = "PDN00002",
+        });
+        Good().ToTaitSettings().Should().BeNull();
     }
 }

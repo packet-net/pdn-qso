@@ -44,8 +44,12 @@ public interface IStation : IAsyncDisposable
     /// run both need it, and reaching for it by casting to <see cref="Station"/> made every
     /// other implementation of this interface - a test's shared-medium wrapper, say - silently
     /// lose the lever.
+    /// <para>
+    /// Null when the modem is not a pdn-soundmodem one at all: a Tait radio running its own
+    /// FFSK or SDM modem has nothing here to reach for.
+    /// </para>
     /// </remarks>
-    IModem Modem { get; }
+    IModem? Modem { get; }
 
     /// <summary>
     /// Every frame heard that is one of ours, decoded. Fires after

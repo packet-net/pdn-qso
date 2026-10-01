@@ -307,7 +307,7 @@ internal sealed class HalfDuplexChannel : IDisposable
 
         public IPowerControl Power => _inner.Power;
 
-        public IModem Modem => _inner.Modem;
+        public IModem? Modem => _inner.Modem;
 
         public event Action<LinkFrame, FrameQuality>? FrameReceived;
 

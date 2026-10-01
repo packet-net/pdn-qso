@@ -9,6 +9,10 @@
     <!-- Directly, not just through pdn-soundmodem: the Flex power control reads the radio's
          meters and writes rfpower through this client's own types. AGPL-3.0, same as here. -->
     <PackageReference Include="M0LTE.Flex" />
+    <!-- The Tait radios' own modems: SDM through the CCDI driver, FFSK Transparent through
+         the AX.25 transport packet.net builds on it. -->
+    <PackageReference Include="M0LTE.Tait.Ccdi" />
+    <PackageReference Include="Packet.Ax25.Radio.Tait" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
   </ItemGroup>

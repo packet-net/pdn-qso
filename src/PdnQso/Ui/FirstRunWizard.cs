@@ -3,6 +3,7 @@ using M0LTE.Flex;
 using Packet.SoundModem.Modems;
 using PdnQso.Config;
 using PdnQso.Link.Devices;
+using PdnQso.Link.Tait;
 using Terminal.Gui.App;
 using Terminal.Gui.Views;
 
@@ -63,12 +64,19 @@ public static class FirstRunWizard
 
         config = config with { Callsign = callsign.Trim().ToUpperInvariant() };
 
+        // A Tait radio runs its own modems and nothing else, and nothing else runs them.
+        bool tait = DeviceString.TryParse(config.Device, out DeviceString? parsed, out _)
+            && parsed is TaitDeviceString;
         string? mode = ChoiceDialog.Show(
             app,
             "Mode",
-            "The modem. Both ends have to be on the same one.",
-            [.. ModemCatalog.AllModes.Select(m => new Choice(ModeLabel(m), m))],
-            config.Mode);
+            tait
+                ? "The radio's own modem. Both ends have to be on the same one."
+                : "The modem. Both ends have to be on the same one.",
+            tait
+                ? [.. TaitModes.All.Select(m => new Choice($"{m,-22} {TaitModes.Describe(m)}", m))]
+                : [.. ModemCatalog.AllModes.Select(m => new Choice(ModeLabel(m), m))],
+            tait && !TaitModes.IsTait(config.Mode) ? TaitModes.Ffsk : config.Mode);
         if (mode is null)
         {
             return null;
@@ -152,16 +160,20 @@ public static class FirstRunWizard
         choices.Add(new Choice(
             "A pipe pair, for two copies of this tool on one machine",
             "pipe:/tmp/pdn-qso-a,/tmp/pdn-qso-b,48000"));
+        choices.Add(new Choice(
+            "Tait TM8100/TM8200, its own modem - put its serial port in the field below",
+            "tait:/dev/ttyUSB0"));
 
         return ChoiceDialog.Show(
             app,
             "Device",
-            choices.Count > 3
+            choices.Count > 4
                 ? "The radio. What this machine has is listed; anything else can be typed."
                 : "No sound cards found on this machine. Type the device, or pick one of these.",
             choices,
             initial,
-            "An ALSA card, flex:<radio>[:slice][@station], ubersdr:<instance>, or pipe:<in>,<out>[,<rate>].");
+            "An ALSA card, flex:<radio>[:slice][@station], ubersdr:<instance>, pipe:<in>,<out>[,<rate>], "
+            + "or tait:<port>[,<baud>].");
     }
 
     /// <summary>

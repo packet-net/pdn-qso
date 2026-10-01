@@ -6,15 +6,17 @@ Operating notes for agents working in `packet-net/pdn-qso`.
 
 `pdn-qso` is a terminal tool for interactive two-way testing over the pdn-soundmodem modems: a
 Monitor mode, keyboard-to-keyboard Chat with a stop-and-wait ARQ, fountain-coded File transfer,
-and a Perf mode that produces numbers. Three devices: FlexRadio (DAX audio + PTT + power), a
-sound card with the CM108 PTT widget, and an UberSDR web receiver (receive only). Read
+and a Perf mode that produces numbers. Four devices: FlexRadio (DAX audio + PTT + power), a
+sound card with the CM108 PTT widget, an UberSDR web receiver (receive only), and a Tait
+TM8100/TM8200 running its own FFSK or SDM modem (no audio; see design.md 5a). Read
 [docs/plan.md](docs/plan.md) for the why and [docs/design.md](docs/design.md) for the how; the
 design doc is binding on layout, protocol and conventions.
 
 ## Licence rules (hard)
 
 - This repo is **AGPL-3.0-or-later**. It depends on `pdn-soundmodem` (GPL-3.0-or-later, allowed
-  under GPLv3 §13) and on `M0LTE.Flex` (AGPL-3.0). Never copy source from pdn-soundmodem into
+  under GPLv3 §13) and on `M0LTE.Flex`, `M0LTE.Tait.Ccdi` and
+  `Packet.Ax25.Radio.Tait` (all AGPL-3.0). Never copy source from pdn-soundmodem into
   this repo; consume the published NuGet package by its public API. New dependencies must be
   AGPL-compatible (MIT/Apache-2.0/BSD/LGPL/GPL/AGPL are fine).
 - Provenance: an algorithm ported from a paper or another project gets a comment naming it.

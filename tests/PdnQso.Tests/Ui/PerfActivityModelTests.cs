@@ -80,7 +80,7 @@ public class PerfActivityModelTests : IDisposable
         atSender.StartRun();
         PerfReport report = await senderRun.RunStreamSenderAsync(
             sender,
-            sender.Modem,
+            senderStation.Modem,
             link.SampleRate,
             // Pinned, as the perf library's own tests pin theirs: the session byte rides in
             // every frame, so a run that leaves it out modulates different audio every time and

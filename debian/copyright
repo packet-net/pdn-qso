@@ -24,8 +24,9 @@ On Debian systems the full text of the GNU Affero General Public License version
 WHY AGPL
 --------
 
-pdn-qso links M0LTE.Flex (AGPL-3.0) for the FlexRadio device, so the combined
-work is AGPL-3.0-or-later.  It also links pdn-soundmodem (GPL-3.0-or-later),
+pdn-qso links M0LTE.Flex (AGPL-3.0) for the FlexRadio device, and
+M0LTE.Tait.Ccdi and Packet.Ax25.Radio.Tait (AGPL-3.0) for the Tait radios' own
+modems, so the combined work is AGPL-3.0-or-later.  It also links pdn-soundmodem (GPL-3.0-or-later),
 which GPLv3 section 13 expressly permits to be combined with AGPL-3.0 code.
 
 BUNDLED THIRD-PARTY COMPONENTS
@@ -34,7 +35,8 @@ BUNDLED THIRD-PARTY COMPONENTS
 The executable statically bundles the .NET runtime and libraries
 (Copyright (c) .NET Foundation and Contributors, MIT licence) together with
 Terminal.Gui (MIT), pdn-soundmodem (GPL-3.0-or-later) and the Packet.NET support
-packages it brings with it, and M0LTE.Flex (AGPL-3.0).  All are licence
+packages it brings with it, M0LTE.Flex, M0LTE.Tait.Ccdi and
+Packet.Ax25.Radio.Tait with the Packet.NET packages it brings (AGPL-3.0).  All are licence
 compatible with AGPL-3.0-or-later.  Their individual licence texts are
 distributed with their respective upstream sources.
 

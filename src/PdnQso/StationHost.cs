@@ -5,6 +5,7 @@ using PdnQso.Link;
 using PdnQso.Link.Audio;
 using PdnQso.Link.Devices;
 using PdnQso.Link.Logging;
+using PdnQso.Link.Tait;
 
 // The host has a Station property, which shadows the type of the same name inside this class;
 // the alias keeps "build a station" readable rather than fully qualified at every use.
@@ -34,7 +35,7 @@ public sealed class StationHost : IAsyncDisposable
 
     private readonly SemaphoreSlim _swap = new(1, 1);
     private IAudioDevice? _device;
-    private LinkStation? _station;
+    private IStation? _station;
     private FrameLogWriter? _frameLog;
     private StationIdentifier? _ident;
     private CancellationTokenSource? _identStop;
@@ -100,6 +101,12 @@ public sealed class StationHost : IAsyncDisposable
         {
             await TearDownAsync().ConfigureAwait(false);
 
+            if (config.ToTaitSettings() is TaitSettings tait)
+            {
+                await StartTaitAsync(config, tait, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             DeviceString device = DeviceString.Parse(config.Device);
             int rate = ModemCatalog.DspRateFor(config.Mode);
 
@@ -122,9 +129,10 @@ public sealed class StationHost : IAsyncDisposable
                     ? FrameLogWriter.Open(logPath)
                     : null;
 
-                _station = LinkStation.Create(
+                LinkStation station = LinkStation.Create(
                     config.ToStationOptions(), opened, config.Mode, config.ToModemOptions(), _frameLog);
-                _station.Start();
+                _station = station;
+                station.Start();
             }
             catch
             {
@@ -152,6 +160,43 @@ public sealed class StationHost : IAsyncDisposable
         {
             _swap.Release();
         }
+    }
+
+    /// <summary>
+    /// Brings up a station on a Tait radio's own modem. No audio device, no power control and
+    /// no Morse ident: the radio modulates and keys itself, its power is in its programming,
+    /// and every frame it sends carries the callsign in its AX.25 source address.
+    /// </summary>
+    private async Task StartTaitAsync(QsoConfig config, TaitSettings tait, CancellationToken cancellationToken)
+    {
+        _frameLog = config.ResolvedFrameLogPath is string logPath ? FrameLogWriter.Open(logPath) : null;
+        TaitStation station;
+        try
+        {
+            station = await TaitStation
+                .OpenAsync(
+                    config.ToStationOptions(), tait, config.Mode, canTransmit: !MonitorOnly, _frameLog,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            if (_frameLog is not null)
+            {
+                await _frameLog.DisposeAsync().ConfigureAwait(false);
+                _frameLog = null;
+            }
+
+            throw;
+        }
+
+        _station = station;
+        station.Start();
+        Config = config;
+        Note($"station: {config.Callsign} on {station.DeviceName}, {config.Mode}, frames up to "
+            + $"{station.MaxFrameBytes} bytes"
+            + (MonitorOnly ? " (monitor only, transmitter locked out)" : ""));
+        StationChanged?.Invoke(station);
     }
 
     /// <summary>Sets the power the config asks for, if the device has a power control.</summary>

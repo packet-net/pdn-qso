@@ -93,8 +93,10 @@ public sealed class WaveformLadder
     public static WaveformLadder ForStation(IStation station, IReadOnlyList<int>? steps = null)
     {
         ArgumentNullException.ThrowIfNull(station);
-        IModem modem = station.Modem;
-        return new WaveformLadder(modem as IHardwareControllable, modem.Mode, steps);
+        IModem? modem = station.Modem;
+        return modem is null
+            ? Disabled(steps)
+            : new WaveformLadder(modem as IHardwareControllable, modem.Mode, steps);
     }
 
     /// <summary>A ladder that does nothing, for a modem that has no lever.</summary>

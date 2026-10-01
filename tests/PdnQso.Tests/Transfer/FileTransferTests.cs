@@ -951,7 +951,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
 
         public PdnQso.Link.Devices.IPowerControl Power => inner.Power;
 
-        public IModem Modem => inner.Modem;
+        public IModem? Modem => inner.Modem;
 
         public void Start() => inner.Start();
 
@@ -1040,7 +1040,7 @@ public class FileTransferTests(ITestOutputHelper output) : IDisposable
 
         public PdnQso.Link.Devices.IPowerControl Power => _inner.Power;
 
-        public IModem Modem => _inner.Modem;
+        public IModem? Modem => _inner.Modem;
 
         public void Start() => _inner.Start();
 

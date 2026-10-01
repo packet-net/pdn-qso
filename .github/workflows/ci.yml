@@ -51,6 +51,9 @@ jobs:
           grep -q 'usr/share/doc/pdn-qso/copyright$' <<<"$listing"
           # The frame log is SQLite, and its native shim is published loose beside the bundle.
           grep -q 'usr/lib/pdn-qso/libe_sqlite3\.so$' <<<"$listing"
+          # The Tait radios are driven over a serial port, and System.IO.Ports needs its native
+          # shim beside the bundle or the first open of a tait: device fails.
+          grep -q 'usr/lib/pdn-qso/libSystem\.IO\.Ports\.Native\.so$' <<<"$listing"
           # This is a program somebody runs, not a service. A unit file in here means the
           # packaging has drifted into pdn-soundmodem's shape by accident.
           if grep -q 'systemd' <<<"$listing"; then

@@ -1,6 +1,6 @@
 # pdn-qso
 
-A terminal tool for interactive two-way testing over the [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem) modems. One radio, one correspondent, and a screen full of what actually happened: no AX.25 node in the way, no BBS, no routing. It is a test instrument with a friendly face.
+A terminal tool for interactive two-way testing over the [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem) modems, and over the two modems built into a Tait TM8100/TM8200. One radio, one correspondent, and a screen full of what actually happened: no AX.25 node in the way, no BBS, no routing. It is a test instrument with a friendly face.
 
 Four things to do with it, in one full-screen keyboard-only UI that works over ssh and fits in 80x24:
 
@@ -11,44 +11,35 @@ Four things to do with it, in one full-screen keyboard-only UI that works over s
 | **File** | a transfer in either direction, with the receiver's have/need count | rateless fountain-coded blocks and small status frames |
 | **Perf** | frames sent, heard and delivered, goodput, mean and worst SNR, round-trip time, time on air | a scripted stream of numbered frames, or a ping-pong |
 
-Three devices: a **FlexRadio** 6000-series over the LAN (DAX audio, PTT and power), any **sound card** with a CM108 PTT widget, and a public **UberSDR** web receiver for listening only. Any mode pdn-soundmodem ships: the packet modes, the FreeDV datac modes, the MIL-STD-188-110D waveforms.
+Four devices: a **FlexRadio** 6000-series over the LAN (DAX audio, PTT and power), any **sound card** with a CM108 PTT widget, a public **UberSDR** web receiver for listening only, and a **Tait TM8100/TM8200** on its serial port running its own modem. Any mode pdn-soundmodem ships: the packet modes, the FreeDV datac modes, the MIL-STD-188-110D waveforms. On a Tait, its FFSK modem in Transparent mode, or its Short Data Messages.
 
 Everything it sends is an ordinary AX.25 UI frame inside the modem's own framing, so a monitor, a node or the daemon's frame log sees well-formed traffic and this tool coexists on a shared channel rather than jamming it.
 
 ## Start here
 
-Plug in the CM108 widget, install the package for your architecture, and run it:
+pdn-qso is in the packet-net apt repository, for `amd64`, `arm64` and `armhf`. Add the repository once:
 
 ```
-sudo apt install ./pdn-qso_<arch>.deb
+curl -fsSL https://packet-net.github.io/apt/pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/packet-net.gpg
+echo "deb [signed-by=/usr/share/keyrings/packet-net.gpg] https://packet-net.github.io/apt ./" | sudo tee /etc/apt/sources.list.d/packet-net.list
+sudo apt update
+```
+
+Then install it and run it:
+
+```
+sudo apt install pdn-qso
 pdn-qso
 ```
 
-`<arch>` is `amd64`, `arm64` or `armhf`. The packages are on the [latest release](https://github.com/packet-net/pdn-qso/releases/latest), and their names never change, so this is always the current one for a Raspberry Pi:
-
-```
-wget https://github.com/packet-net/pdn-qso/releases/latest/download/pdn-qso_arm64.deb
-sudo apt install ./pdn-qso_arm64.deb
-```
-
-It is a program you run as yourself, not a service. The `.deb` is a self-contained build, so the target needs no .NET runtime.
-
-## Keeping it up to date
-
-```
-pdn-qso --upgrade
-```
-
-That works out which package this machine needs, asks GitHub for the current release, and stops there if you already have it. Otherwise it downloads the package, checks it against the release's own `SHA256SUMS`, and installs it with `apt-get` (through `sudo`, which may ask for your password). Nothing checks for updates on its own and nothing installs anything you did not ask for: a station in the middle of a QSO does not want its program changed underneath it.
-
-If the machine has neither root nor sudo, the download is left in place and the command to run is printed. Release candidates are published as prereleases, so `--upgrade` never offers you one.
+It is a program you run as yourself, not a service. The package is a self-contained build, so the target needs no .NET runtime. Updates arrive with everything else, through `sudo apt update && sudo apt upgrade`; the repository picks up each release within a minute or so of it being tagged. The `.deb` files are also attached to every [release](https://github.com/packet-net/pdn-qso/releases/latest) for a machine that cannot reach the repository.
 
 The first run has no config, so it asks four questions and writes the answers to `~/.config/pdn-qso/config.json`:
 
-1. **The radio.** It lists this machine's sound cards, looks on the network for a FlexRadio, and takes an UberSDR host if you would rather listen to somebody else's receiver.
+1. **The radio.** It lists this machine's sound cards, looks on the network for a FlexRadio, takes an UberSDR host if you would rather listen to somebody else's receiver, and offers a Tait radio on a serial port.
 2. **Your callsign**, with an SSID if you want one (`M0LTE-7`).
-3. **The mode**, from everything pdn-soundmodem ships.
-4. **Where in the audio passband to put it**, in Hz, and for a Flex or an UberSDR the RF frequency the audio centre is to land on.
+3. **The mode**, from everything pdn-soundmodem ships, or on a Tait the radio's own two.
+4. **Where in the audio passband to put it**, in Hz, and for a Flex or an UberSDR the RF frequency the audio centre is to land on. A Tait has no audio, so it is not asked.
 
 Everything after that is the settings dialog on **F5**. Nothing is hidden in a file you have to hand-edit.
 
@@ -69,18 +60,23 @@ Each activity puts the cursor where you are about to type. In Chat that is the l
 ```
 pdn-qso                                     start on the configured radio
 pdn-qso --monitor-only                      listen and log, never transmit
-pdn-qso --upgrade                           install the current release over this one
 pdn-qso --device flex:discover --mode qpsk2400 --callsign M0LTE-7
 pdn-qso --config /etc/pdn-qso-test.json     a second instance with its own settings
+pdn-qso --device tait:/dev/ttyUSB0 --mode tait-sdm
 ```
 
 `--device`, `--mode` and `--callsign` are for that session only and are never written back.
 
-## The three radios, and what each one needs
+## The four radios, and what each one needs
 
 - **Sound card plus CM108 widget** (`plughw:1,0`): the card, and the PTT line. PTT is `none`, `cm108` (with the device node and the GPIO pin) or `serial` (with RTS or DTR); nothing can guess which one is wired, so it is four settings. The card runs at its own rate (48000 is the default and works for every mode) and the audio is resampled by a whole number to the mode's rate.
 - **FlexRadio** (`flex:discover`, `flex:<ip>`, `flex:<ip>:<slice>`, or a trailing `@station` to coexist with a running SmartSDR): audio over DAX, PTT and power over the LAN. Power is set in watts and the forward-power meter is read back beside it, so the status bar says both what you asked for and what the radio delivered. Give it the RF frequency, not the dial: the dial follows from the audio centre and the sideband.
 - **UberSDR** (`ubersdr:<instance>`): a public web receiver, so **receive only**. Use it for Monitor, or as the receiving half of a two-way test with a transmitter somewhere else. There is no PTT and no power, and the status bar says so rather than showing a lamp that means nothing.
+- **Tait TM8100/TM8200** (`tait:/dev/ttyUSB0`, or `tait:<port>,<baud>` if its CCDI port is not programmed for the usual 28800): the radio is the modem, so there is no audio, no audio centre, no Morse ident and no power setting; the radio does all of that from its own programming. Every frame still carries your callsign as its AX.25 source. It runs one of two modes, and both ends have to be on the same one:
+  - **`tait-ffsk`**: the radio's FFSK modem in Transparent mode, as a byte pipe. Frames can be as big as on any other mode. The radio has to be programmed with Transparent mode enabled and "Ignore Escape Sequence" off, or it cannot be brought back out of Transparent mode and needs a power cycle. Both radios need the same FFSK over-air rate; set **Tait FFSK baud** in the settings to match (2400 by default), which is only used to work out air time. There is no carrier sense in Transparent mode, so the radio's own channel access is what keeps it off a busy channel.
+  - **`tait-sdm`**: the radio's Short Data Messages. Each frame is one binary SDM, so it is small: 125 bytes at most, which is about 105 characters of chat and a 103-byte file block. Chat lines and file blocks are cut down to fit automatically; a Perf payload over 107 bytes, or a file name over 67 bytes, is refused with the limit. SDMs have to be enabled in both radios' programming, with CCDI SDM output on. Frames go to **Tait SDM to** in the settings, `********` (every radio) by default, or a radio's eight-character data identity. The radio's carrier sense works here, so the station waits for a clear channel as it does on audio.
+
+  The support comes from packet.net's [`Packet.Ax25.Radio.Tait`](https://www.nuget.org/packages/Packet.Ax25.Radio.Tait) (Transparent mode) and [`M0LTE.Tait.Ccdi`](https://www.nuget.org/packages/M0LTE.Tait.Ccdi) (SDM).
 
 ## Two stations on one machine, no radio at all
 
@@ -99,6 +95,29 @@ pdn-qso --config ~/b.json --device pipe:/tmp/qso-ba,/tmp/qso-ab,48000 --callsign
 ```
 
 The rate at the end has to be a whole multiple of the mode's own rate; 48000 is a whole multiple of every mode this tool has. Press F1 on both, type a line on one, and it appears on the other with a tick beside it on the sender. F2 sends a file the same way, F3 measures the link.
+
+## Without the screen
+
+For scripts, tests over ssh, and a lab with two radios on one machine, pdn-qso runs without the terminal UI when given one of these. It prints plain text (every frame heard and sent, in the Monitor's format, then a summary) and exits 0 on success, 1 on loss or failure, and 2 for a bad command line or config. A missing config file is not an error here: it is the defaults plus what the command line says.
+
+| | |
+|---|---|
+| `--respond` | answer chat lines, pings and streams, printing what is heard; prints `ready` once it is answering, and runs until Ctrl+C |
+| `--listen` | print what is heard, never transmit |
+| `--for <seconds>` | with `--respond` or `--listen`, stop after this long |
+| `--ping <n>` | ping the far end `n` times, report round trips and loss |
+| `--chat <text>` | send one chat line and wait for the acknowledgement |
+| `--stream <n>` | send `n` numbered frames and report what the far end heard; `--payload <bytes>` sets the size |
+
+Two Tait radios on one machine, one answering and one measuring:
+
+```
+pdn-qso --config ~/a.json --device tait:/dev/ttyUSB0 --mode tait-sdm --callsign M0LTE-7 --respond &
+pdn-qso --config ~/b.json --device tait:/dev/ttyUSB1 --mode tait-sdm --callsign M0LTE-8 --ping 20
+pdn-qso --config ~/b.json --device tait:/dev/ttyUSB1 --mode tait-sdm --callsign M0LTE-8 --chat "hello"
+```
+
+`--callsign` takes an SSID (`M0LTE-7`), and every frame carries it as its source.
 
 ## What the Perf numbers mean
 
@@ -143,4 +162,4 @@ Needs the .NET 10 SDK. The tests are hermetic: two stations joined through a sim
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE).
 
-It links `M0LTE.Flex` (AGPL-3.0) and `pdn-soundmodem` (GPL-3.0-or-later), which GPLv3 section 13 expressly permits to be combined with AGPL-3.0 code.
+It links `M0LTE.Flex`, `M0LTE.Tait.Ccdi` and `Packet.Ax25.Radio.Tait` (all AGPL-3.0) and `pdn-soundmodem` (GPL-3.0-or-later), which GPLv3 section 13 expressly permits to be combined with AGPL-3.0 code.

@@ -125,4 +125,29 @@ public class DeviceStringTests
         device.Text.Should().Be("flex:10.45.0.20:B@shack");
         device.ToString().Should().Be("flex:10.45.0.20:B@shack");
     }
+
+    [Theory]
+    [InlineData("tait:/dev/ttyUSB0", "/dev/ttyUSB0", 28800)]
+    [InlineData("tait:/dev/serial/by-id/usb-Silicon_Labs_CP2102-if00-port0,19200",
+        "/dev/serial/by-id/usb-Silicon_Labs_CP2102-if00-port0", 19200)]
+    public void A_Tait_Radio_Is_Its_Serial_Port_And_Rate(string text, string port, int baud)
+    {
+        var device = (TaitDeviceString)DeviceString.Parse(text);
+
+        device.Kind.Should().Be(DeviceKind.Tait);
+        device.Port.Should().Be(port);
+        device.Baud.Should().Be(baud);
+        device.CanTransmit.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("tait:", "not a Tait radio")]
+    [InlineData("tait:/dev/ttyUSB0,fast", "not a serial rate")]
+    [InlineData("tait:/dev/ttyUSB0,0", "not a serial rate")]
+    public void A_Tait_Radio_With_No_Port_Or_A_Bad_Rate_Is_Refused(string text, string says)
+    {
+        DeviceString.TryParse(text, out _, out string? error).Should().BeFalse();
+
+        error.Should().Contain(says);
+    }
 }
