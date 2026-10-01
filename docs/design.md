@@ -116,6 +116,10 @@ activity that focuses its own input as it is built focuses nothing. The same app
 up: in Terminal.Gui a view whose container cannot be focused is unreachable from the keyboard
 however focusable it is itself, so the panes and each activity's root view set `CanFocus`.
 
+### 6b2. Headless runs
+
+`--respond`, `--listen`, `--ping`, `--chat` and `--stream` run without Terminal.Gui: `HeadlessHost` brings a `StationHost` up from the config (no wizard; a missing file is the defaults plus the command line) and `HeadlessSession` drives the same `ChatSession` and `PerfRun` the activities do, printing `MonitorLine` rows and the report text, and returning 0 for success, 1 for loss or failure, 2 for a bad command line or config. It exists so a script, or an agent driving a two-radio lab over ssh, exercises exactly what an operator would and gets an exit code to test. It takes every clock through a `TimeProvider` like the library, so its tests run on `VirtualClock`.
+
 ## 6c. Packaging and updates
 
 The release attaches one `.deb` per architecture under a name with **no version in it**:

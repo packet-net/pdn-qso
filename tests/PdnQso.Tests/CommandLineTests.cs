@@ -121,4 +121,55 @@ public class CommandLineTests
             help.Should().Contain(option);
         }
     }
+
+    [Fact]
+    public void Each_Headless_Action_Is_Read_With_What_It_Needs()
+    {
+        CommandLine.Parse(["--respond"]).Headless.Should().Be(new HeadlessCommand(HeadlessAction.Respond));
+        CommandLine.Parse(["--listen", "--for", "60"]).Headless
+            .Should().Be(new HeadlessCommand(HeadlessAction.Listen) { RunFor = TimeSpan.FromSeconds(60) });
+        CommandLine.Parse(["--ping", "20"]).Headless
+            .Should().Be(new HeadlessCommand(HeadlessAction.Ping) { Count = 20 });
+        CommandLine.Parse(["--chat", "hello from the lab"]).Headless
+            .Should().Be(new HeadlessCommand(HeadlessAction.Chat) { Text = "hello from the lab" });
+        CommandLine.Parse(["--stream=50", "--payload", "64"]).Headless
+            .Should().Be(new HeadlessCommand(HeadlessAction.Stream) { Count = 50, PayloadBytes = 64 });
+        CommandLine.Parse([]).Headless.Should().BeNull("no action is the screen");
+    }
+
+    [Fact]
+    public void A_Callsign_With_An_Ssid_Is_Taken_Whole_For_A_Headless_Run()
+    {
+        CommandLine parsed = CommandLine.Parse(
+            ["--device", "tait:/dev/ttyUSB1", "--mode", "tait-sdm", "--callsign", "M0LTE-7", "--respond"]);
+
+        parsed.Error.Should().BeNull();
+        QsoConfig config = parsed.ApplyTo(new QsoConfig());
+        config.Callsign.Should().Be("M0LTE-7");
+        config.Validate().Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(new[] { "--ping", "3", "--chat", "hi" }, "one of")]
+    [InlineData(new[] { "--ping", "0" }, "1 or more")]
+    [InlineData(new[] { "--ping", "lots" }, "1 or more")]
+    [InlineData(new[] { "--payload", "64" }, "--payload goes with --stream")]
+    [InlineData(new[] { "--ping", "3", "--for", "10" }, "--for goes with")]
+    [InlineData(new[] { "--monitor-only", "--ping", "3" }, "never transmits")]
+    [InlineData(new[] { "--monitor-only", "--respond" }, "never transmits")]
+    public void A_Headless_Command_That_Does_Not_Make_Sense_Is_Refused(string[] args, string says)
+    {
+        CommandLine.Parse(args).Error.Should().NotBeNull().And.Contain(says);
+    }
+
+    [Fact]
+    public void The_Help_Lists_The_Headless_Actions()
+    {
+        string help = CommandLine.HelpText("1.0.0");
+
+        foreach (string option in new[] { "--respond", "--listen", "--ping", "--chat", "--stream", "--payload", "--for" })
+        {
+            help.Should().Contain(option);
+        }
+    }
 }

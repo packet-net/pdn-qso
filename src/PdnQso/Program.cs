@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using Packet.SoundModem.Modems;
 using PdnQso;
 using PdnQso.Config;
+using PdnQso.Headless;
 using PdnQso.Ui;
 using Terminal.Gui.App;
 using Terminal.Gui.Input;
@@ -58,6 +59,12 @@ catch (Exception e) when (e is InvalidDataException or IOException or Unauthoriz
     // Refusing to start beats writing a fresh default over somebody's hand-edited file.
     Console.Error.WriteLine($"pdn-qso: {e.Message}");
     return 2;
+}
+
+if (command.Headless is HeadlessCommand headless)
+{
+    // No screen and no wizard: what is on disk, or the defaults, with the command line on top.
+    return await HeadlessHost.RunAsync(command.ApplyTo(onDisk ?? new QsoConfig()), headless, command.MonitorOnly);
 }
 
 // Ctrl+Q, not Terminal.Gui's default of Esc: Esc is the key an operator hits to back out of a

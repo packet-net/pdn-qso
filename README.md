@@ -96,6 +96,29 @@ pdn-qso --config ~/b.json --device pipe:/tmp/qso-ba,/tmp/qso-ab,48000 --callsign
 
 The rate at the end has to be a whole multiple of the mode's own rate; 48000 is a whole multiple of every mode this tool has. Press F1 on both, type a line on one, and it appears on the other with a tick beside it on the sender. F2 sends a file the same way, F3 measures the link.
 
+## Without the screen
+
+For scripts, tests over ssh, and a lab with two radios on one machine, pdn-qso runs without the terminal UI when given one of these. It prints plain text (every frame heard and sent, in the Monitor's format, then a summary) and exits 0 on success, 1 on loss or failure, and 2 for a bad command line or config. A missing config file is not an error here: it is the defaults plus what the command line says.
+
+| | |
+|---|---|
+| `--respond` | answer chat lines, pings and streams, printing what is heard; runs until Ctrl+C |
+| `--listen` | print what is heard, never transmit |
+| `--for <seconds>` | with `--respond` or `--listen`, stop after this long |
+| `--ping <n>` | ping the far end `n` times, report round trips and loss |
+| `--chat <text>` | send one chat line and wait for the acknowledgement |
+| `--stream <n>` | send `n` numbered frames and report what the far end heard; `--payload <bytes>` sets the size |
+
+Two Tait radios on one machine, one answering and one measuring:
+
+```
+pdn-qso --config ~/a.json --device tait:/dev/ttyUSB0 --mode tait-sdm --callsign M0LTE-7 --respond &
+pdn-qso --config ~/b.json --device tait:/dev/ttyUSB1 --mode tait-sdm --callsign M0LTE-8 --ping 20
+pdn-qso --config ~/b.json --device tait:/dev/ttyUSB1 --mode tait-sdm --callsign M0LTE-8 --chat "hello"
+```
+
+`--callsign` takes an SSID (`M0LTE-7`), and every frame carries it as its source.
+
 ## What the Perf numbers mean
 
 - **sent / heard / delivered.** Sent is what this station put on air. Heard is what the far end decoded. Delivered is what it decoded and had not already seen, so heard minus delivered is duplicates.
