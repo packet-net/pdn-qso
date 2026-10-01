@@ -168,6 +168,12 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
+          # A dispatched publish runs before the tag exists, so the notes script would ask git
+          # for v<prev>..v<new> and fail. Tag the commit being built locally (never pushed;
+          # gh release create below makes the real tag at the same commit).
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git tag "$TAG" "$GITHUB_SHA"
+          fi
           # One bullet per merged PR (or direct commit) since the previous tag, grouped by kind,
           # from first-parent history - no rehashed install text, no API calls.
           python3 scripts/release-notes.py "$TAG" > /tmp/pdn-qso-relnotes.md
