@@ -147,6 +147,11 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Self-contained, so the runtime in each package is the runner's SDK's, and a stale runner
+      # ships old security fixes. Fail the release instead.
+      - name: Check the bundled .NET runtime is the latest patch
+        run: python3 scripts/check-bundled-runtime.py ./artifacts/*.deb
+
       - name: Checksums
         working-directory: ./artifacts
         run: |
