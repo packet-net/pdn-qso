@@ -14,12 +14,21 @@ jobs:
       # not something GitHub keeps current for us: `gh api /orgs/packet-net/actions/runners`
       # reports the version each one is on.
       - uses: actions/checkout@v7
-      # The xUnit v3 / MTP test apphosts (OutputType=Exe) resolve the runtime via DOTNET_ROOT;
-      # the runner's distro dotnet lives outside the apphost's default search paths
-      # (/usr/share/dotnet, /etc/dotnet/install_location), so register it explicitly or every
-      # test invocation dies with "You must install .NET".
-      - name: Register .NET root for MTP apphosts
-        run: echo "DOTNET_ROOT=$(dirname "$(readlink -f "$(which dotnet)")")" >> "$GITHUB_ENV"
+      # Self-hosted runners: put the SDK under the runner account's home, which it can always write,
+      # never in the system install (which it cannot).
+      - name: Choose where setup-dotnet installs
+        if: runner.environment == 'self-hosted'
+        run: echo "DOTNET_INSTALL_DIR=$HOME/.dotnet" >> "$GITHUB_ENV"
+      # Install the SDK in the job instead of trusting the runner's: every build then bundles the
+      # current runtime whichever runner picked it up. It also sets DOTNET_ROOT, which the xUnit v3
+      # / MTP test apphosts need to find the runtime.
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: ${{ runner.environment == 'github-hosted' }}
+          cache-dependency-path: Directory.Packages.props
+      - name: Check the tools this job needs
+        run: scripts/ci-require-tools.sh dpkg-deb:dpkg
       # Restore past the HTTP cache. These runners are self-hosted and keep their NuGet cache
       # between jobs indefinitely, so a dependency published minutes ago is invisible here while
       # nuget.org already serves it. That is every PR that bumps pdn-soundmodem just after
