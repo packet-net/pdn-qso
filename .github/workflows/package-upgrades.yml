@@ -18,6 +18,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Always the default branch: a manual run from a feature branch must not push it to main.
+          ref: main
       - name: Choose where setup-dotnet installs
         if: runner.environment == 'self-hosted'
         run: echo "DOTNET_INSTALL_DIR=$HOME/.dotnet" >> "$GITHUB_ENV"
@@ -36,6 +39,15 @@ jobs:
           dotnet restore --no-http-cache
           dotnet build --configuration Release --no-restore
           dotnet test --configuration Release --no-build
+          # Package smoke build: a dependency bump that breaks the .deb fails this attempt.
+          debian/build-deb.sh 0.0.0-ci amd64 "$RUNNER_TEMP/artifacts"
+          listing="$(dpkg-deb --contents "$RUNNER_TEMP/artifacts/pdn-qso_amd64.deb")"
+          grep -q 'usr/lib/pdn-qso/pdn-qso$' <<<"$listing"
+          grep -q 'usr/bin/pdn-qso ->' <<<"$listing"
+          grep -q 'usr/share/doc/pdn-qso/copyright$' <<<"$listing"
+          grep -q 'usr/lib/pdn-qso/libe_sqlite3\.so$' <<<"$listing"
+          grep -q 'usr/lib/pdn-qso/libSystem\.IO\.Ports\.Native\.so$' <<<"$listing"
+          if grep -q 'systemd' <<<"$listing"; then echo '::error::the .deb ships a systemd unit'; exit 1; fi
       - name: Security pass (only when the full upgrade failed)
         id: security
         if: steps.full.outcome == 'failure'
@@ -49,6 +61,16 @@ jobs:
           dotnet restore --no-http-cache
           dotnet build --configuration Release --no-restore
           dotnet test --configuration Release --no-build
+
+          # Package smoke build: a dependency bump that breaks the .deb fails this attempt.
+          debian/build-deb.sh 0.0.0-ci amd64 "$RUNNER_TEMP/artifacts"
+          listing="$(dpkg-deb --contents "$RUNNER_TEMP/artifacts/pdn-qso_amd64.deb")"
+          grep -q 'usr/lib/pdn-qso/pdn-qso$' <<<"$listing"
+          grep -q 'usr/bin/pdn-qso ->' <<<"$listing"
+          grep -q 'usr/share/doc/pdn-qso/copyright$' <<<"$listing"
+          grep -q 'usr/lib/pdn-qso/libe_sqlite3\.so$' <<<"$listing"
+          grep -q 'usr/lib/pdn-qso/libSystem\.IO\.Ports\.Native\.so$' <<<"$listing"
+          if grep -q 'systemd' <<<"$listing"; then echo '::error::the .deb ships a systemd unit'; exit 1; fi
 
       - name: Commit and push on a green build
         if: success()
