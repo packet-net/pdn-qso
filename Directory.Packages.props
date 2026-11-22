@@ -21,7 +21,7 @@
          amalgamation than the 3.x bundle's SQLite 3.53.4. Keep the pin. -->
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
     <!-- The terminal UI. MIT. -->
-    <PackageVersion Include="Terminal.Gui" Version="2.5.0" />
+    <PackageVersion Include="Terminal.Gui" Version="2.6.0" />
     <!-- Testing - xUnit v3 on the Microsoft Testing Platform (MTP) runner, as pdn-soundmodem
          does: the test project is an Exe and is run directly. -->
     <PackageVersion Include="xunit.v3" Version="4.0.3" />
